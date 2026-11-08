@@ -226,6 +226,7 @@ function buildTracker() {
   const sh = {};
   order.forEach((name, i) => { sh[name] = ss.insertSheet(name, i); });
   removeTempSheet_(ss);
+  detectArgSeparator_(sh[SHEETS.lists]);
 
   buildListsStatic_(sh[SHEETS.lists]);
   buildSettings_(ss, sh[SHEETS.settings]);
@@ -294,7 +295,7 @@ function buildListsDynamic_(ss, sh) {
     F: nonBlank(NR + 'Acc_Name'),
     K: nonBlank('VSTACK(' + NR + 'Inc_Name,' + NR + 'Reg_Name,' + NR + 'Var_Name,' + NR + 'Debt_Name,' + NR + 'Sav_Name)'),
   };
-  Object.keys(f).forEach(c => sh.getRange(c + '2').setFormula(f[c]));
+  Object.keys(f).forEach(c => sh.getRange(c + '2').setFormula(F_(f[c])));
   sh.protect().setDescription('Службовий аркуш трекера').setWarningOnly(true);
 }
 
@@ -329,7 +330,7 @@ function buildSettings_(ss, sh) {
   // Дата розрахунку, що діє насправді (порожня → сьогодні).
   const calc = ss.getRangeByName(NR + 'Calc');
   const calcNow = calc.offset(0, 1);
-  calcNow.setFormula('=IF(' + calc.getA1Notation() + '="",TODAY(),' + calc.getA1Notation() + ')')
+  calcNow.setFormula(F_('=IF(' + calc.getA1Notation() + '="",TODAY(),' + calc.getA1Notation() + ')'))
     .setNumberFormat(FMT.date).setFontColor(THEME.primary).setFontWeight('bold');
   ss.setNamedRange(NR + 'CalcDate', calcNow);
   calc.offset(0, 2).setValue('← діє зараз. ' + GENERAL_ROWS[2].hint);
@@ -337,7 +338,7 @@ function buildSettings_(ss, sh) {
 
   // Сума правила 50/30/20 має бути 100%.
   const needs = ss.getRangeByName(NR + 'Needs');
-  needs.offset(0, 1).setFormula('=IF(ROUND(SUM(' + needs.offset(0, 0, 3, 1).getA1Notation() + '),4)=1,"✓ разом 100%","⚠ разом має бути 100%")')
+  needs.offset(0, 1).setFormula(F_('=IF(ROUND(SUM(' + needs.offset(0, 0, 3, 1).getA1Notation() + '),4)=1,"✓ разом 100%","⚠ разом має бути 100%")'))
     .setFontColor(THEME.primary);
   needs.offset(0, 2).setValue(RULE_ROWS[0].hint).setFontColor(THEME.muted).setFontStyle('italic');
   protect_(needs.offset(0, 1), 'Перевірка 50/30/20');
@@ -361,7 +362,7 @@ function buildSettings_(ss, sh) {
   const startA1 = absA1_(ss.getRangeByName(NR + 'Start'));
   const first = debtStart.getCell(1, 1).getA1Notation();
   debtStart.setDataValidation(SpreadsheetApp.newDataValidation()
-    .requireFormulaSatisfied('=AND(ISNUMBER(' + first + '),' + first + '>=' + startA1 + ')')
+    .requireFormulaSatisfied(F_('=AND(ISNUMBER(' + first + '),' + first + '>=' + startA1 + ')'))
     .setAllowInvalid(false)
     .setHelpText('Дата початку не може бути раніше дати старту трекера (Налаштування → Загальне → Дата старту).')
     .build());
@@ -408,7 +409,7 @@ function buildTableBlock_(ss, sh, row, block) {
       const formulas = [];
       for (let r = 0; r < n; r++) {
         const rr = top + r;
-        formulas.push([c.f.replace(/\{(\w+)\}/g, (m, k) => {
+        formulas.push([F_(c.f).replace(/\{(\w+)\}/g, (m, k) => {
           if (!letter[k]) throw new Error('Невідома колонка ' + k + ' у блоці ' + block.key);
           return letter[k] + rr;
         })]);
@@ -475,7 +476,7 @@ function styleInput_(ss, rng, t) {
 /** Підказка праворуч від шапки блоку, якщо галочок не рівно одна. */
 function addExactlyOneHint_(sh, rng, blockCols, what) {
   const hintCell = sh.getRange(rng.getRow() - 1, 2 + blockCols + 1);
-  hintCell.setFormula('=IF(COUNTIF(' + rng.getA1Notation() + ',TRUE)=1,"","⚠ Познач ' + what + '")')
+  hintCell.setFormula(F_('=IF(COUNTIF(' + rng.getA1Notation() + ',TRUE)=1,"","⚠ Познач ' + what + '")'))
     .setFontColor(THEME.danger).setFontWeight('bold');
   protect_(hintCell, 'Підказка: ' + what);
 }
@@ -647,6 +648,49 @@ function createEntryForm() { notYet_('Форма для телефону з\'я�
 function notYet_(msg) {
   Logger.log(msg);
   SpreadsheetApp.getActiveSpreadsheet().toast(msg, '💜 Трекер', 5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// РОЗДІЛЬНИК АРГУМЕНТІВ У ФОРМУЛАХ
+// У коді всі формули пишуться з комами (англійський синтаксис). В українській та
+// інших «європейських» локалях Google Sheets чекає «;», тому перед записом формула
+// проходить через F_(). Роздільник визначається пробною формулою в самій таблиці.
+// ─────────────────────────────────────────────────────────────────────────────
+let ARG_SEP_ = null;
+
+function detectArgSeparator_(probeSheet) {
+  detectArgSeparatorAt_(probeSheet.getRange('A1'));
+}
+
+function argSep_() {
+  if (ARG_SEP_) return ARG_SEP_;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const probe = ss.getSheetByName(SHEETS.lists) || ss.getSheets()[0];
+  const cell = probe.getRange(probe.getMaxRows(), probe.getMaxColumns());
+  const keep = cell.getFormula() || cell.getValue();
+  detectArgSeparatorAt_(cell);
+  if (typeof keep === 'string' && keep.charAt(0) === '=') cell.setFormula(keep); else cell.setValue(keep);
+  return ARG_SEP_;
+}
+
+/** =SUM(1,2): у «комовій» локалі дасть 3; в українській — 1,2 або помилку. */
+function detectArgSeparatorAt_(cell) {
+  cell.setFormula('=SUM(1,2)');
+  SpreadsheetApp.flush();
+  ARG_SEP_ = cell.getValue() === 3 ? ',' : ';';
+  cell.clearContent();
+}
+
+/** Формула з комами → формула з роздільником цієї таблиці. Коми в "рядках" не чіпає. */
+function F_(formula) {
+  if (argSep_() === ',') return formula;
+  let out = '', inStr = false;
+  for (let i = 0; i < formula.length; i++) {
+    const ch = formula.charAt(i);
+    if (ch === '"') inStr = !inStr;
+    out += (ch === ',' && !inStr) ? ';' : ch;
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
