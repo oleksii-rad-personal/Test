@@ -3,32 +3,38 @@
  * Етап 1: Старт, Налаштування, Операції, довідники, залежний список «Тип → Категорія».
  *
  * Як встановити: Розширення → Apps Script → вставити цей файл у Code.gs → зберегти →
- * оновити таблицю → меню «💜 Трекер» → «Побудувати трекер з нуля».
+ * оновити таблицю → меню «Трекер» → «Побудувати трекер з нуля».
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ПАЛІТРА — змінюй кольори тут, решта коду бере їх звідси
 // ─────────────────────────────────────────────────────────────────────────────
-const THEME = {
-  primary:   '#4F86B5', // основний (заголовки блоків, велика цифра)
-  accent:    '#8CC4E8', // акцент (лінії під заголовками, другий ряд графіків)
-  headerBg:  '#E5F1FA', // фон заголовків таблиць
-  headerTxt: '#2C5677', // текст заголовків таблиць
+const THEMES = {
+  // Жінка — м'яка лілово-рожева
+  f: {
+    primary: '#8E6BBF', accent: '#E58FB3', headerBg: '#F3E8F7', headerTxt: '#5B3F86',
+    calcBg: '#F7F5FA', disabled: '#D9D4E3', text: '#3D3550', muted: '#9A8FB0',
+  },
+  // Чоловік — блідо-блакитна
+  m: {
+    primary: '#4F86B5', accent: '#8CC4E8', headerBg: '#E5F1FA', headerTxt: '#2C5677',
+    calcBg: '#F3F8FC', disabled: '#CCD9E4', text: '#2E3A46', muted: '#8A9BAA',
+  },
+};
+
+/** Активна палітра. Спільні кольори тут, а «характер» (основний, акцент, фони) — з THEMES за статтю. */
+const THEME = Object.assign({
   input:     '#FFF8D6', // поля вводу (світло-жовті)
   danger:    '#E57373', // червоний — перевищення
   warn:      '#FFD54F', // жовтий — попередження (>80%)
   ok:        '#81C784', // зелений — норма
-  okBg:      '#E8F5E9', // світлий фон «норма»
-  okTxt:     '#2E7D32', // текст «норма»
-  dangerBg:  '#FDECEC', // світлий фон «перевищення»
-  warnBg:    '#FFF6D5', // світлий фон «попередження»
-  calcBg:    '#F3F8FC', // фон клітинок з формулами
-  disabled:  '#CCD9E4', // неактивні поля
-  text:      '#2E3A46', // основний текст
-  muted:     '#8A9BAA', // підказки
-  bg:        '#FFFFFF', // фон аркушів
+  okBg:      '#E8F5E9',
+  okTxt:     '#2E7D32',
+  dangerBg:  '#FDECEC',
+  warnBg:    '#FFF6D5',
+  bg:        '#FFFFFF',
   font:      'Montserrat',
-};
+}, THEMES.m);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // НАЗВИ ТА ФОРМАТИ
@@ -152,7 +158,7 @@ const SETTINGS_BLOCKS = [
   },
   {
     key: 'Debt', title: 'БОРГИ І РОЗСТРОЧКИ', rows: 8,
-    hint: 'Кредити, «оплата частинами», борги друзям. Залишок рахується з «Операцій». Закрила раніше — постав галочку.',
+    hint: 'Кредити, «оплата частинами», борги друзям. Залишок рахується з «Операцій». Закрито раніше — постав галочку.',
     cols: [
       { key: 'Name',    h: 'Назва',               t: 'text',        w: 190 },
       { key: 'Pay',     h: 'Сума платежу',        t: 'money',       w: 120 },
@@ -219,7 +225,8 @@ const SEEDS = {
 // ─────────────────────────────────────────────────────────────────────────────
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('💜 Трекер')
+    .createMenu(menuTitle_())
+    .addItem('👋 Мій профіль (квіз)', 'showQuiz')
     .addItem('Побудувати трекер з нуля', 'buildTracker')
     .addSeparator()
     .addItem('Заповнити демо-даними', 'fillDemoData')
@@ -235,13 +242,21 @@ function onOpen() {
 // ─────────────────────────────────────────────────────────────────────────────
 // ПОБУДОВА
 // ─────────────────────────────────────────────────────────────────────────────
-function buildTracker() {
+/**
+ * opts.keep — з квізу: зберегти дані без діалогу. З меню (без opts) і без профілю — спершу квіз.
+ */
+function buildTracker(opts) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const fromQuiz = opts && typeof opts === 'object' && 'keep' in opts;
+  if (!fromQuiz && !hasProfile_()) {
+    try { showQuiz(); return; } catch (e) { /* запуск з редактора — будуємо без квізу */ }
+  }
+  applyProfileTheme_();
   ARG_SEP_ = null; // роздільник визначаємо заново в кожному запуску
 
   // Якщо трекер уже є — пропонуємо зберегти введені дані.
   const saved = captureUserData_(ss);
-  const keep = saved ? askKeepData_(saved) : false;
+  const keep = saved ? (fromQuiz ? !!opts.keep : askKeepData_(saved)) : false;
   if (!keep) resetDemoState_();
   deleteTrackerSheets_(ss);
 
@@ -256,6 +271,7 @@ function buildTracker() {
   buildListsStatic_(sh[SHEETS.lists]);
   buildSettings_(ss, sh[SHEETS.settings]);
   buildListsDynamic_(ss, sh[SHEETS.lists]);
+  writeProfileCells_(ss);
   buildOps_(ss, sh[SHEETS.ops]);
   buildDashboard_(ss, sh[SHEETS.dash]);
   buildYear_(ss, sh[SHEETS.year]);
@@ -279,9 +295,9 @@ function buildTracker() {
   const errors = scanErrors_(ss, trackerSheetNames_());
   const msg = errors.length
     ? '⚠ Помилок у формулах: ' + errors.length + '. Перша: ' + errors[0]
-    : '✓ Трекер побудовано, помилок немає. Почни з вкладки «Налаштування».';
+    : '✓ ' + nameComma_().replace(/""/g, '"') + 'трекер побудовано, помилок немає. Почни з вкладки «Налаштування».';
   Logger.log(msg + (errors.length ? '\n' + errors.slice(0, 50).join('\n') : ''));
-  ss.toast(msg, '💜 Трекер', 10);
+  ss.toast(msg, menuTitle_(), 10);
 }
 
 /** Знімок полів вводу «Налаштувань» і рядків «Операцій» перед перебудовою. */
@@ -647,7 +663,7 @@ function buildOps_(ss, sh) {
 }
 
 // ─── «Старт» ─────────────────────────────────────────────────────────────────
-const START = { formRow: 14, checkRow: 18, checkLines: 10 };
+const START = { formRow: 14, checkRow: 18, checkLines: 10, profileRow: 31 };
 
 function buildStart_(sh) {
   styleSheet_(sh);
@@ -661,10 +677,10 @@ function buildStart_(sh) {
   writeBlockTitle_(sh, 5, 'ЯК ПОЧАТИ', 2);
   const steps = [
     'Відкрий «Налаштування» і заповни жовті клітинки: дохід і день основної виплати, обов\'язкові платежі, бюджети на щодень, борги, цілі, рахунки.',
-    'Прийшли гроші або щось купила — додай рядок в «Операції»: сума, тип, категорія. Дата і тип «Витрата» поставляться самі.',
+    'Прийшли гроші або щось ' + g_('купила', 'купив') + ' — додай рядок в «Операції»: сума, тип, категорія. Дата і тип «Витрата» поставляться самі.',
     'З телефона ще швидше — через форму (посилання нижче). Це 10 секунд прямо на касі.',
     'Дивись «Дашборд»: велика цифра — скільки можна витратити до наступної виплати і скільки це на день.',
-    'Раз на тиждень заглядай у «Рік», «Цілі», «Борги», «Підписки» і «Календар». Пропустила кілька днів — нічого страшного, просто допиши.',
+    'Раз на тиждень заглядай у «Рік», «Цілі», «Борги», «Підписки» і «Календар». ' + g_('Пропустила', 'Пропустив') + ' кілька днів — нічого страшного, просто допиши.',
   ];
   steps.forEach((s, i) => {
     sh.getRange(6 + i, 2).setValue(i + 1).setFontSize(16).setFontWeight('bold').setFontColor(THEME.accent)
@@ -674,13 +690,14 @@ function buildStart_(sh) {
   });
 
   writeBlockTitle_(sh, START.formRow - 1, 'ФОРМА ДЛЯ ТЕЛЕФОНУ', 2);
-  sh.getRange(START.formRow, 3).setValue('Ще не створена: меню «💜 Трекер» → «Створити / оновити форму для телефону».')
+  sh.getRange(START.formRow, 3).setValue('Ще не створена: меню «Трекер» → «Створити / оновити форму для телефону».')
     .setFontColor(THEME.muted);
   const formUrl = PropertiesService.getDocumentProperties().getProperty(FORM.propUrl);
   if (formUrl) writeFormLink_(sh, formUrl);
 
   writeBlockTitle_(sh, START.checkRow - 1, 'ПЕРЕВІРКА ТАБЛИЦІ', 2);
-  sh.getRange(START.checkRow, 3).setValue('Меню «💜 Трекер» → «Перевірити таблицю».').setFontColor(THEME.muted);
+  sh.getRange(START.checkRow, 3).setValue('Меню «Трекер» → «Перевірити таблицю».').setFontColor(THEME.muted);
+  writeStartProfile_(sh);
   trimSheet_(sh, 40, 4);
 }
 
@@ -888,7 +905,7 @@ function buildDashboard_(ss, sh) {
   sh.getRange(DASH.sentenceRow, 2, 1, DASH.cols).merge().setFormula(X_(
     '=IF(@C_Status="empty","Додай дохід в «Операції» — і тут з\'явиться твоя цифра.",' +
     'IF(@C_IsCur,IF(@D_Free<0,"⚠ Перевитрата на "&FIXED(-@D_Free,0)&" грн. Подивись блок «Змінні» нижче.",' +
-    '"≈ "&FIXED(@C_Limit,0)&" грн на день, "&@C_Days&" дн. до виплати"&' +
+    '"' + nameComma_() + '≈ "&FIXED(@C_Limit,0)&" грн на день, "&@C_Days&" дн. до виплати"&' +
     'IF(@C_Limit>=@C_Avg," — ти в нормі 💚"," — менше, ніж ти зазвичай витрачаєш ("&FIXED(@C_Avg,0)&" грн/день)")),' +
     'IF(@C_Past,"Цикл завершено — це залишок на його кінець.","Цей цикл ще не почався.")))'))
     .setFontSize(13).setFontWeight('bold').setFontColor(THEME.headerTxt).setHorizontalAlignment('center');
@@ -1042,7 +1059,7 @@ function dashBlocks_() {
     },
     {
       key: 'reg', title: 'РЕГУЛЯРНІ ПЛАТЕЖІ', n: 15, total: true,
-      hint: 'Оплатила — внеси операцію з цією категорією, галочка ✓ поставиться сама.',
+      hint: g_('Оплатила', 'Оплатив') + ' — внеси операцію з цією категорією, галочка ✓ поставиться сама.',
       cols: [
         { h: 'Назва', f: i => '=INDEX(@Reg_Name,' + i + ')', tot: 'label' },
         { h: 'Моя сума', fmt: FMT.money0, f: (i, r) => '=IF(B' + r + '="",0,N(INDEX(@Reg_Mine,' + i + ')))' },
@@ -1236,7 +1253,7 @@ const PROP_SNAP = 'BT_SNAP_';
 function fillDemoData() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!ss.getSheetByName(SHEETS.dash)) {
-    ss.toast('Спочатку побудуй трекер: меню «💜 Трекер» → «Побудувати трекер з нуля».', '💜 Трекер', 8);
+    ss.toast('Спочатку побудуй трекер: меню «Трекер» → «Побудувати трекер з нуля».', menuTitle_(), 8);
     return;
   }
   const props = PropertiesService.getDocumentProperties();
@@ -1296,7 +1313,7 @@ function fillDemoData() {
   const foreign = countForeignOpsInCycle_(ss);
   ss.toast('Демо-дані додано. «Можу витратити» = ' + fmtMoney_(free) + ' (очікується ' + fmtMoney_(DEMO_EXPECTED) + ').' +
     (foreign ? ' Увага: у поточному циклі є ще ' + foreign + ' твоїх операцій — вони змінюють цифру.' : ''),
-    '💜 Трекер', 10);
+    menuTitle_(), 10);
   ss.setActiveSheet(ss.getSheetByName(SHEETS.dash));
 }
 
@@ -1316,7 +1333,7 @@ function clearDemoData() {
   PropertiesService.getDocumentProperties().deleteProperty(PROP_DEMO);
   SpreadsheetApp.flush();
   ss.toast('Видалено демо-операцій: ' + removed + '. ' +
-    (restored ? 'Налаштування повернуто як були до демо.' : 'Збережених налаштувань не було — їх не змінено.'), '💜 Трекер', 8);
+    (restored ? 'Налаштування повернуто як були до демо.' : 'Збережених налаштувань не було — їх не змінено.'), menuTitle_(), 8);
 }
 
 /** Рядки операцій демо: [дата, тип, сума, категорія, рахунок, коментар, джерело]. */
@@ -1330,7 +1347,7 @@ function demoOperations_(t) {
   const d = x => Math.min(x, t.d);
   add(0, d(1), I, 30200, 'Зарплата', '', 'Зарплата (офіс)');
   add(0, d(4), I, 12700, 'Фріланс', '', 'Фріланс-проєкт');
-  add(0, d(1), D, 4770, 'Розстрочка за телефон', '', 'Закрила повністю, щоб не тягнулася');
+  add(0, d(1), D, 4770, 'Розстрочка за телефон', '', g_('Закрила', 'Закрив') + ' повністю, щоб не тягнулася');
   add(0, d(1), E, 15000, 'Оренда', '', 'Половина оренди — ділимо з нареченим');
   add(0, d(3), E, 1950, 'Комуналка + інтернет', '', '');
   add(0, d(1), S, 3000, 'Подушка безпеки', '', '');
@@ -1491,6 +1508,7 @@ function fmtMoney_(v) {
 // ПЕРЕВІРКА
 // ─────────────────────────────────────────────────────────────────────────────
 function selfCheck() {
+  applyProfileTheme_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   SpreadsheetApp.flush();
   const res = [];
@@ -1649,7 +1667,7 @@ function selfCheck() {
     });
   }
   const failed = res.filter(l => l.charAt(0) === '✗').length;
-  ss.toast(failed ? '⚠ Не пройдено перевірок: ' + failed + '. Деталі — на вкладці «Старт».' : '✓ Усі перевірки пройдено.', '💜 Трекер', 8);
+  ss.toast(failed ? '⚠ Не пройдено перевірок: ' + failed + '. Деталі — на вкладці «Старт».' : '✓ Усі перевірки пройдено.', menuTitle_(), 8);
   return res;
 }
 
@@ -1871,7 +1889,7 @@ function buildDebts_(ss, sh) {
 
   // Велике повідомлення і загальний прогрес.
   sh.getRange(3, 2, 1, 6).merge().setFormula(X_('=IF(L' + top + '="",IF(SUMPRODUCT((@Debt_Name<>"")*(@Debt_Left="")*(@Debt_Closed<>TRUE))>0,"Допиши залишки боргів у «Налаштуваннях»","✓ Активних боргів немає — так тримати!"),' +
-    '"❄ Вільна від боргів: "&INDEX(G' + top + ':G' + bottom + ',MATCH(MAX(F' + top + ':F' + bottom + '),F' + top + ':F' + bottom + ',0)))'))
+    '"❄ ' + g_('Вільна', 'Вільний') + ' від боргів: "&INDEX(G' + top + ':G' + bottom + ',MATCH(MAX(F' + top + ':F' + bottom + '),F' + top + ':F' + bottom + ',0)))'))
     .setFontSize(16).setFontWeight('bold').setFontColor(THEME.headerTxt).setBackground(THEME.headerBg)
     .setHorizontalAlignment('center');
   sh.setRowHeight(3, 40);
@@ -2063,9 +2081,10 @@ const FORM = {
 };
 
 function createEntryForm() {
+  applyProfileTheme_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!ss.getSheetByName(SHEETS.ops)) {
-    ss.toast('Спочатку побудуй трекер: меню «💜 Трекер» → «Побудувати трекер з нуля».', '💜 Трекер', 8);
+    ss.toast('Спочатку побудуй трекер: меню «Трекер» → «Побудувати трекер з нуля».', menuTitle_(), 8);
     return;
   }
   const props = PropertiesService.getDocumentProperties();
@@ -2136,7 +2155,7 @@ function createEntryForm() {
 
   const start = ss.getSheetByName(SHEETS.start);
   if (start) writeFormLink_(start, url);
-  ss.toast((isNew ? 'Форму створено' : 'Форму оновлено') + '. Посилання — на вкладці «Старт».', '💜 Трекер', 8);
+  ss.toast((isNew ? 'Форму створено' : 'Форму оновлено') + '. Посилання — на вкладці «Старт».', menuTitle_(), 8);
   return url;
 }
 
@@ -2164,7 +2183,7 @@ function writeFormLink_(start, url) {
     .setFontSize(12).setFontWeight('bold').setFontColor(THEME.primary);
   start.getRange(START.formRow + 1, 3)
     .setValue('Відкрий посилання на телефоні й додай на головний екран («Поділитися» → «На екран Додому»). ' +
-      'Змінила категорії в «Налаштуваннях» — меню «Створити / оновити форму».')
+      g_('Змінила', 'Змінив') + ' категорії в «Налаштуваннях» — меню «Створити / оновити форму».')
     .setFontColor(THEME.muted).setFontStyle('italic').setWrap(true);
 }
 
@@ -2406,6 +2425,362 @@ function matchImportRule_(name) {
   }
   return null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ПРОФІЛЬ І КВІЗ-ЗНАЙОМСТВО
+// Ім'я, стать (тема і рід у текстах), вік. Місце під пенсійні питання — далі.
+// ─────────────────────────────────────────────────────────────────────────────
+const PROP_PROFILE = 'BT_PROFILE';
+const PROFILE_FIELDS = [
+  ['P_Name', 'Ім\'я'], ['P_Gender', 'Стать'], ['P_Age', 'Вік'], ['P_AsOf', 'Вік на дату'],
+  ['P_RetireAge', 'Вік виходу на пенсію'], ['P_RetireIncome', 'Бажаний дохід на пенсії'], ['P_RetireCurrency', 'Валюта'],
+];
+let PROFILE_ = null;
+
+function profile_() {
+  if (PROFILE_) return PROFILE_;
+  let p = {};
+  try { p = JSON.parse(PropertiesService.getDocumentProperties().getProperty(PROP_PROFILE) || '{}'); } catch (e) { p = {}; }
+  PROFILE_ = p;
+  return p;
+}
+
+function hasProfile_() {
+  const p = profile_();
+  return !!(p.name && p.gender);
+}
+
+/** Текст у жіночому або чоловічому роді. Без профілю — жіночий (основна аудиторія). */
+function g_(female, male) {
+  return profile_().gender === 'm' ? male : female;
+}
+
+function menuTitle_() {
+  return (profile_().gender === 'm' ? '💙' : '💜') + ' Трекер';
+}
+
+/** «Ім'я, » для формул (лапки екрановано) або порожньо. */
+function nameComma_() {
+  const n = profile_().name;
+  return n ? String(n).replace(/"/g, '""') + ', ' : '';
+}
+
+function applyProfileTheme_() {
+  Object.assign(THEME, THEMES[profile_().gender === 'f' ? 'f' : 'm']);
+}
+
+/** Поточний вік з урахуванням того, скільки часу минуло від квізу. */
+function currentAge_() {
+  const p = profile_();
+  if (!p.age) return '';
+  const asOf = p.asOf ? new Date(p.asOf) : new Date();
+  return p.age + Math.floor((Date.now() - asOf.getTime()) / (365.25 * 24 * 3600 * 1000));
+}
+
+function yearsWord_(n) {
+  const a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return 'рік';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return 'роки';
+  return 'років';
+}
+
+/** Меню: відкрити квіз. */
+function showQuiz() {
+  const html = HtmlService.createHtmlOutput(quizHtml_()).setWidth(520).setHeight(640);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Давай познайомимось');
+}
+
+/** Виклик з квізу. mode: 'build' — перебудувати трекер з профілем, 'save' — лише зберегти. */
+function quizSubmit(p, mode) {
+  const name = String(p && p.name || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+  const gender = p && (p.gender === 'm' || p.gender === 'f') ? p.gender : '';
+  const age = Math.round(Number(p && p.age));
+  if (name.length < 2) throw new Error('Ім\'я має бути хоча б з 2 літер.');
+  if (!gender) throw new Error('Обери стать.');
+  if (!(age >= 14 && age <= 100)) throw new Error('Вік — від 14 до 100.');
+  const old = profile_();
+  const prof = Object.assign({}, old, { name: name, gender: gender, age: age, asOf: todayIso_(SpreadsheetApp.getActiveSpreadsheet()) });
+  PropertiesService.getDocumentProperties().setProperty(PROP_PROFILE, JSON.stringify(prof));
+  PROFILE_ = prof;
+  applyProfileTheme_();
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (mode === 'build' || !ss.getSheetByName(SHEETS.start)) {
+    buildTracker({ keep: true });
+    return 'built';
+  }
+  writeProfileCells_(ss);
+  const start = ss.getSheetByName(SHEETS.start);
+  if (start) writeStartProfile_(start);
+  return 'saved';
+}
+
+/** Профіль у прихованих «_Списках» — для майбутнього пенсійного калькулятора. */
+function writeProfileCells_(ss) {
+  const sh = ss.getSheetByName(SHEETS.lists);
+  if (!sh) return;
+  const p = profile_();
+  const col = 18; // R:S
+  sh.getRange(1, col, 1, 2).setValues([['Профіль', '']]).setFontWeight('bold');
+  const vals = {
+    P_Name: p.name || '', P_Gender: p.gender === 'm' ? 'Чоловік' : (p.gender === 'f' ? 'Жінка' : ''),
+    P_Age: p.age || '', P_AsOf: p.asOf || '', P_RetireAge: p.retireAge || '',
+    P_RetireIncome: p.retireIncome || '', P_RetireCurrency: p.retireCurrency || '',
+  };
+  PROFILE_FIELDS.forEach((f, i) => {
+    sh.getRange(2 + i, col).setValue(f[1]);
+    const cell = sh.getRange(2 + i, col + 1).setValue(vals[f[0]]);
+    ss.setNamedRange(NR + f[0], cell);
+  });
+}
+
+function writeStartProfile_(sh) {
+  const p = profile_();
+  const r = START.profileRow;
+  sh.getRange(2, 2).setValue(spaced_('ТРЕКЕР БЮДЖЕТУ'));
+  sh.getRange(3, 2).setValue((p.name ? 'Привіт, ' + p.name + '! ' : '') +
+    'Вписуєш суму — таблиця сама рахує, скільки можна витратити до наступної виплати.');
+  writeBlockTitle_(sh, r - 1, 'ПРОФІЛЬ', 2);
+  const age = currentAge_();
+  sh.getRange(r, 3).setValue(hasProfile_()
+    ? p.name + ' · ' + (p.gender === 'm' ? 'чоловік' : 'жінка') + (age ? ' · ' + age + ' ' + yearsWord_(age) : '')
+    : 'Ще не заповнений.').setFontWeight('bold').setFontColor(THEME.headerTxt);
+  sh.getRange(r + 1, 3).setValue('Змінити: меню «Трекер» → «👋 Мій профіль (квіз)».')
+    .setFontColor(THEME.muted).setFontStyle('italic');
+}
+
+/** HTML квізу. Палітри й поточний профіль підставляються з коду. */
+function quizHtml_() {
+  const p = profile_();
+  const data = {
+    themes: THEMES,
+    profile: { name: p.name || '', gender: p.gender || '', age: p.age || 30 },
+  };
+  return QUIZ_HTML.replace('__DATA__', JSON.stringify(data).replace(/</g, '\\u003c'));
+}
+
+const QUIZ_HTML = `<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --p:#6F8FB3; --a:#A9C6E0; --bg:#EEF3F8; --t:#34506B; --ink:#2E3A46; --muted:#8A9BAA; --err:#D9534F; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font-family:Montserrat, Arial, sans-serif; color:var(--ink); background:#fff; }
+  body { transition: background .4s; }
+  .wrap { display:flex; flex-direction:column; height:100%; padding:22px 26px 20px; }
+  .top { display:flex; align-items:center; gap:12px; min-height:24px; }
+  .steps { font-size:13px; font-weight:700; color:var(--muted); white-space:nowrap; }
+  .bar { flex:1; height:6px; background:var(--bg); border-radius:99px; overflow:hidden; transition:background .4s; }
+  .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--p),var(--a)); border-radius:99px; transition:width .45s ease, background .4s; }
+  .screen { flex:1; display:none; flex-direction:column; justify-content:center; animation:in .35s ease; }
+  .screen.on { display:flex; }
+  @keyframes in { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+  .emoji { font-size:52px; line-height:1; margin-bottom:14px; }
+  h1 { font-size:26px; font-weight:800; margin:0 0 10px; color:var(--t); transition:color .4s; line-height:1.2; }
+  p.sub { font-size:15px; color:var(--muted); margin:0 0 22px; line-height:1.45; }
+  input[type=text] { width:100%; font:600 22px Montserrat, Arial; padding:16px 18px; border:2px solid var(--bg); border-radius:16px;
+    outline:none; color:var(--ink); background:#fff; transition:border-color .2s; }
+  input[type=text]:focus { border-color:var(--p); box-shadow:0 0 0 4px var(--bg); }
+  .err { color:var(--err); font-size:13px; font-weight:600; min-height:20px; margin-top:8px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .card { border:2px solid #E7EBF0; border-radius:20px; padding:20px 14px 16px; text-align:center; cursor:pointer;
+    transition:transform .15s, border-color .2s, box-shadow .2s; background:#fff; user-select:none; }
+  .card:hover { transform:translateY(-2px); box-shadow:0 8px 22px rgba(0,0,0,.07); }
+  .card.sel { border-color:var(--p); box-shadow:0 0 0 4px var(--bg); }
+  .card .e { font-size:46px; }
+  .card b { display:block; font-size:18px; margin:10px 0 4px; }
+  .card small { color:var(--muted); font-size:12px; }
+  .sw { display:flex; justify-content:center; gap:5px; margin-top:10px; }
+  .sw span { width:18px; height:18px; border-radius:50%; }
+  .age { display:flex; align-items:center; justify-content:center; gap:18px; margin:6px 0 18px; }
+  .round { width:54px; height:54px; border-radius:50%; border:2px solid var(--bg); background:#fff; font:700 26px Montserrat, Arial;
+    color:var(--p); cursor:pointer; transition:background .2s; }
+  .round:hover { background:var(--bg); }
+  .num { font:800 64px Montserrat, Arial; color:var(--t); width:130px; text-align:center; border:none; outline:none; background:none; }
+  .unit { text-align:center; color:var(--muted); font-weight:600; margin-top:-14px; margin-bottom:12px; }
+  input[type=range] { width:100%; accent-color:var(--p); }
+  .sum { display:flex; flex-direction:column; gap:10px; }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-radius:16px; background:var(--bg);
+    cursor:pointer; transition:filter .2s, background .4s; }
+  .row:hover { filter:brightness(.97); }
+  .row span { color:var(--muted); font-size:13px; font-weight:600; }
+  .row b { font-size:17px; }
+  .row em { font-style:normal; color:var(--p); font-size:13px; font-weight:700; margin-left:10px; }
+  .foot { display:flex; gap:12px; align-items:center; margin-top:16px; }
+  .btn { flex:1; border:none; border-radius:16px; padding:16px 18px; font:700 16px Montserrat, Arial; cursor:pointer;
+    transition:transform .1s, opacity .2s, background .4s; }
+  .btn:active { transform:scale(.98); }
+  .btn.main { background:var(--p); color:#fff; }
+  .btn.main:disabled { opacity:.4; cursor:default; }
+  .btn.ghost { flex:0 0 auto; background:none; color:var(--muted); padding:16px 10px; }
+  .link { background:none; border:none; color:var(--muted); font:600 13px Montserrat, Arial; text-decoration:underline; cursor:pointer;
+    margin-top:12px; align-self:center; }
+  .spin { width:56px; height:56px; border-radius:50%; border:6px solid var(--bg); border-top-color:var(--p); animation:r 1s linear infinite; margin-bottom:22px; }
+  @keyframes r { to { transform:rotate(360deg); } }
+  .center { align-items:center; text-align:center; }
+  .hint { font-size:12px; color:var(--muted); text-align:center; margin-top:10px; }
+</style></head>
+<body><div class="wrap">
+  <div class="top" id="top"><div class="steps" id="steps"></div><div class="bar"><i id="bar"></i></div></div>
+
+  <section class="screen on" id="s0">
+    <div class="emoji">👋</div>
+    <h1>Привіт! Давай познайомимось</h1>
+    <p class="sub">3 короткі питання — і я налаштую трекер саме під тебе: кольори, звертання й підказки. Це займе хвилину.</p>
+    <div class="foot"><button class="btn main" onclick="go(1)">Почати</button></div>
+  </section>
+
+  <section class="screen" id="s1">
+    <div class="emoji">✍️</div>
+    <h1>Як тебе звати?</h1>
+    <p class="sub">Саме так я до тебе звертатимусь у таблиці.</p>
+    <input type="text" id="name" maxlength="30" placeholder="Твоє ім'я" autocomplete="given-name">
+    <div class="err" id="e1"></div>
+    <div class="foot"><button class="btn ghost" onclick="go(0)">← Назад</button><button class="btn main" onclick="next1()">Далі</button></div>
+  </section>
+
+  <section class="screen" id="s2">
+    <div class="emoji">🎨</div>
+    <h1 id="h2">Як до тебе звертатись?</h1>
+    <p class="sub">Від цього залежать кольори таблиці й те, як я пишу підказки.</p>
+    <div class="cards">
+      <div class="card" id="cf" onclick="pick('f')"><div class="e">👩</div><b>Жінка</b><small>лілово-рожева тема</small>
+        <div class="sw" id="swf"></div></div>
+      <div class="card" id="cm" onclick="pick('m')"><div class="e">👨</div><b>Чоловік</b><small>блакитна тема</small>
+        <div class="sw" id="swm"></div></div>
+    </div>
+    <div class="err" id="e2"></div>
+    <div class="foot"><button class="btn ghost" onclick="go(1)">← Назад</button><button class="btn main" id="b2" onclick="next2()" disabled>Далі</button></div>
+  </section>
+
+  <section class="screen" id="s3">
+    <div class="emoji">🎂</div>
+    <h1>Скільки тобі років?</h1>
+    <p class="sub">Знадобиться пізніше — щоб порахувати, скільки часу є до пенсії і скільки відкладати.</p>
+    <div class="age"><button class="round" onclick="bump(-1)">−</button>
+      <input class="num" id="age" inputmode="numeric" maxlength="3"><button class="round" onclick="bump(1)">+</button></div>
+    <div class="unit" id="unit">років</div>
+    <input type="range" id="range" min="14" max="100">
+    <div class="err" id="e3"></div>
+    <div class="foot"><button class="btn ghost" onclick="go(2)">← Назад</button><button class="btn main" onclick="next3()">Далі</button></div>
+  </section>
+
+  <section class="screen" id="s4">
+    <div class="emoji">🎉</div>
+    <h1 id="h4">Готово!</h1>
+    <p class="sub" id="p4">Перевір — натисни на рядок, щоб змінити.</p>
+    <div class="sum">
+      <div class="row" onclick="go(1)"><span>Ім'я</span><div><b id="vName"></b><em>змінити</em></div></div>
+      <div class="row" onclick="go(2)"><span>Звертання</span><div><b id="vGen"></b><em>змінити</em></div></div>
+      <div class="row" onclick="go(3)"><span>Вік</span><div><b id="vAge"></b><em>змінити</em></div></div>
+    </div>
+    <div class="foot"><button class="btn main" onclick="send('build')" id="bBuild">Створити мій трекер</button></div>
+    <button class="link" onclick="send('save')">Лише зберегти профіль</button>
+    <div class="hint">Твої операції й налаштування збережуться.</div>
+  </section>
+
+  <section class="screen center" id="s5">
+    <div class="spin"></div>
+    <h1 id="h5">Будую твій трекер…</h1>
+    <p class="sub" id="p5">Це до хвилини.</p>
+  </section>
+
+  <section class="screen center" id="s6">
+    <div class="emoji" id="em6">✅</div>
+    <h1 id="h6">Готово!</h1>
+    <p class="sub" id="p6"></p>
+    <div class="foot" style="width:100%"><button class="btn main" onclick="closeMe()">Відкрити трекер</button></div>
+  </section>
+</div>
+<script>
+  const D = __DATA__;
+  const st = { name: D.profile.name, gender: D.profile.gender, age: D.profile.age || 30 };
+  let cur = 0;
+  const $ = id => document.getElementById(id);
+  const G = (f, m) => st.gender === 'm' ? m : f;
+  const yw = n => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? 'рік' : (a >= 2 && a <= 4 && (b < 12 || b > 14) ? 'роки' : 'років'); };
+
+  function paint() {
+    const t = st.gender ? D.themes[st.gender] : null;
+    const r = document.documentElement.style;
+    if (t) { r.setProperty('--p', t.primary); r.setProperty('--a', t.accent); r.setProperty('--bg', t.headerBg); r.setProperty('--t', t.headerTxt); }
+    $('cf').classList.toggle('sel', st.gender === 'f');
+    $('cm').classList.toggle('sel', st.gender === 'm');
+    $('b2').disabled = !st.gender;
+  }
+  function swatch(id, t) { $(id).innerHTML = [t.primary, t.accent, t.headerBg].map(c => '<span style="background:' + c + '"></span>').join(''); }
+
+  function go(n) {
+    $('s' + cur).classList.remove('on'); cur = n; $('s' + n).classList.add('on');
+    const q = Math.min(Math.max(n, 0), 3);
+    $('top').style.visibility = n >= 1 && n <= 3 ? 'visible' : 'hidden';
+    $('steps').textContent = 'Крок ' + q + ' / 3';
+    $('bar').style.width = (n >= 4 ? 100 : q / 3 * 100) + '%';
+    if (n === 1) setTimeout(() => $('name').focus(), 60);
+    if (n === 2) $('h2').textContent = st.name + ', як до тебе звертатись?';
+    if (n === 3) { setAge(st.age); setTimeout(() => $('age').focus(), 60); }
+    if (n === 4) summary();
+  }
+  function next1() {
+    const v = $('name').value.trim().replace(/\\s+/g, ' ');
+    if (v.length < 2) { $('e1').textContent = 'Напиши ім\\'я — хоча б 2 літери.'; return; }
+    if (!/^[A-Za-zА-Яа-яІіЇїЄєҐґʼ'’ -]+$/.test(v)) { $('e1').textContent = 'Лише літери, пробіл, дефіс чи апостроф.'; return; }
+    $('e1').textContent = ''; st.name = v; go(2);
+  }
+  function pick(g) { st.gender = g; $('e2').textContent = ''; paint(); }
+  function next2() { if (!st.gender) { $('e2').textContent = 'Обери один варіант.'; return; } go(3); }
+  function setAge(n) {
+    n = Math.max(14, Math.min(100, Math.round(Number(n) || 30)));
+    st.age = n; $('age').value = n; $('range').value = n; $('unit').textContent = yw(n);
+  }
+  function bump(d) { setAge(st.age + d); }
+  function next3() {
+    const n = Number($('age').value);
+    if (!(n >= 14 && n <= 100)) { $('e3').textContent = 'Вкажи вік від 14 до 100.'; return; }
+    $('e3').textContent = ''; setAge(n); go(4);
+  }
+  function summary() {
+    $('h4').textContent = 'Готово, ' + st.name + '!';
+    $('p4').textContent = G('Ти готова? ', 'Ти готовий? ') + 'Перевір — натисни на рядок, щоб змінити.';
+    $('vName').textContent = st.name;
+    $('vGen').textContent = st.gender === 'm' ? '👨 Чоловік' : '👩 Жінка';
+    $('vAge').textContent = st.age + ' ' + yw(st.age);
+  }
+  function send(mode) {
+    go(5);
+    $('h5').textContent = mode === 'build' ? 'Будую твій трекер…' : 'Зберігаю профіль…';
+    $('p5').textContent = mode === 'build' ? 'Це до хвилини — можеш поки зробити чай ☕' : 'Секунду.';
+    google.script.run
+      .withSuccessHandler(r => {
+        $('em6').textContent = '✅';
+        $('h6').textContent = r === 'built' ? 'Трекер готовий, ' + st.name + '!' : 'Профіль збережено!';
+        $('p6').textContent = r === 'built'
+          ? 'Почни з вкладки «Старт». Кольори й підказки вже налаштовані під тебе 💫'
+          : 'Щоб змінити кольори таблиці, вибери в меню «Побудувати трекер з нуля».';
+        go(6);
+      })
+      .withFailureHandler(e => {
+        $('em6').textContent = '😕';
+        $('h6').textContent = 'Щось пішло не так';
+        $('p6').textContent = (e && e.message) || String(e);
+        go(6);
+      })
+      .quizSubmit({ name: st.name, gender: st.gender, age: st.age }, mode);
+  }
+  function closeMe() { google.script.host.close(); }
+
+  swatch('swf', D.themes.f); swatch('swm', D.themes.m);
+  $('name').value = st.name;
+  $('name').addEventListener('input', () => { $('e1').textContent = ''; });
+  $('age').addEventListener('input', () => { const n = Number($('age').value); if (n >= 14 && n <= 100) { st.age = n; $('range').value = n; $('unit').textContent = yw(n); } });
+  $('range').addEventListener('input', e => setAge(e.target.value));
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    if (cur === 0) go(1); else if (cur === 1) next1(); else if (cur === 2) next2(); else if (cur === 3) next3();
+  });
+  paint(); go(0);
+</script></body></html>`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // РОЗДІЛЬНИК АРГУМЕНТІВ У ФОРМУЛАХ
