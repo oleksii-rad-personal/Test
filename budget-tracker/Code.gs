@@ -323,8 +323,7 @@ function restoreUserData_(ss, saved) {
   if (saved.ops.length) {
     const sh = ss.getSheetByName(SHEETS.ops);
     const rows = saved.ops.slice(0, DATA_ROWS - 1);
-    sh.getRange(2, 1, rows.length, OPS_HEADERS.length).setValues(rows);
-    applyCategoryValidation_(sh, 2, rows.length, false);
+    writeOpsRows_(sh, 2, rows);
   }
 }
 
@@ -633,9 +632,7 @@ function buildOps_(ss, sh) {
   col(OPS.category).setDataValidation(SpreadsheetApp.newDataValidation()
     .requireValueInRange(listRange_(ss, 'L_All'), true).setAllowInvalid(false)
     .setHelpText('Спочатку обери тип — тут з\'являться його категорії.').build());
-  col(OPS.account).setDataValidation(SpreadsheetApp.newDataValidation()
-    .requireValueInRange(listRange_(ss, 'L_Acc'), true).setAllowInvalid(false)
-    .setHelpText('Порожньо — основний рахунок.').build());
+  col(OPS.account).setDataValidation(accountRule_(ss));
   col(OPS.source).setFontColor(THEME.muted);
 
   [['O_Date', OPS.date], ['O_Type', OPS.type], ['O_Amount', OPS.amount], ['O_Category', OPS.category],
@@ -724,6 +721,26 @@ function handleOpsEdit_(e) {
     sh.getRange(top, OPS.date, n, 2).setValues(vals.map(v => [v[OPS.date - 1], v[OPS.type - 1]]));
   }
   if (typeSet) applyCategoryValidation_(sh, top, n, touches(OPS.type));
+}
+
+function accountRule_(ss) {
+  return SpreadsheetApp.newDataValidation()
+    .requireValueInRange(listRange_(ss, 'L_Acc'), true).setAllowInvalid(false)
+    .setHelpText('Порожньо — основний рахунок.').build();
+}
+
+/**
+ * Записує рядки в «Операції» скриптом. Строгі списки категорій/рахунків стоять на кожній
+ * клітинці окремо, і Apps Script відхиляє запис, що їм не відповідає (напр. після зсуву рядків),
+ * тому спершу знімаємо ці перевірки з рядків, пишемо, а потім ставимо заново під нові типи.
+ */
+function writeOpsRows_(sh, top, rows) {
+  const n = rows.length;
+  if (!n) return;
+  sh.getRange(top, OPS.category, n, 2).clearDataValidations(); // категорія + рахунок
+  sh.getRange(top, 1, n, OPS_HEADERS.length).setValues(rows);
+  sh.getRange(top, OPS.account, n, 1).setDataValidation(accountRule_(sh.getParent()));
+  applyCategoryValidation_(sh, top, n, false);
 }
 
 /**
@@ -1267,8 +1284,7 @@ function fillDemoData() {
   const ops = demoOperations_(t);
   const sh = ss.getSheetByName(SHEETS.ops);
   const first = firstFreeOpsRow_(sh);
-  sh.getRange(first, 1, ops.length, OPS_HEADERS.length).setValues(ops);
-  applyCategoryValidation_(sh, first, ops.length, false);
+  writeOpsRows_(sh, first, ops);
 
   ss.getRangeByName(NR + 'D_Period').setValue(REF.current);
   props.setProperty(PROP_DEMO, '1');
@@ -1435,8 +1451,7 @@ function removeDemoOps_(ss) {
   if (!removed) return 0;
   const blank = new Array(OPS_HEADERS.length).fill('');
   const out = keep.concat(Array.from({ length: n - keep.length }, () => blank.slice()));
-  rng.setValues(out);
-  applyCategoryValidation_(sh, 2, n, false);
+  writeOpsRows_(sh, 2, out);
   return removed;
 }
 
@@ -2179,11 +2194,10 @@ function onFormSubmit(e) {
     const sh = ss.getSheetByName(SHEETS.ops);
     const row = firstFreeOpsRow_(sh);
     if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 100);
-    sh.getRange(row, 1, 1, OPS_HEADERS.length).setValues([[
+    writeOpsRows_(sh, row, [[
       date, answers[FORM.type] || TYPES.expense, amount, answers[FORM.category] || '',
       answers[FORM.account] || '', answers[FORM.comment] || '', FORM.source,
     ]]);
-    applyCategoryValidation_(sh, row, 1, false);
     SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
