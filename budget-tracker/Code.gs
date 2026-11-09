@@ -216,9 +216,7 @@ function onOpen() {
 // ─────────────────────────────────────────────────────────────────────────────
 function buildTracker() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ss.setSpreadsheetLocale('uk_UA');
-  ss.setSpreadsheetTimeZone('Europe/Kyiv');
-
+  ARG_SEP_ = null; // роздільник визначаємо заново в кожному запуску
   deleteTrackerSheets_(ss);
 
   // Спочатку створюємо всі аркуші, бо вони посилаються один на одного.
@@ -237,7 +235,35 @@ function buildTracker() {
   sh[SHEETS.lists].hideSheet();
   ss.setActiveSheet(sh[SHEETS.start]);
   SpreadsheetApp.flush();
-  ss.toast('Трекер побудовано. Почни з вкладки «Налаштування».', '💜 Трекер', 5);
+
+  // Локаль і часовий пояс — лише в кінці: формули вже записані в поточній локалі,
+  // а Google сам переводить збережені формули під нову (коми → «;»).
+  ss.setSpreadsheetLocale('uk_UA');
+  ss.setSpreadsheetTimeZone('Europe/Kyiv');
+  SpreadsheetApp.flush();
+
+  const errors = scanErrors_(ss, [SHEETS.settings, SHEETS.ops, SHEETS.lists, SHEETS.start]);
+  const msg = errors.length
+    ? '⚠ Помилок у формулах: ' + errors.length + '. Перша: ' + errors[0]
+    : '✓ Трекер побудовано, помилок немає. Почни з вкладки «Налаштування».';
+  Logger.log(msg + (errors.length ? '\n' + errors.slice(0, 50).join('\n') : ''));
+  ss.toast(msg, '💜 Трекер', 10);
+}
+
+const ERROR_CODES = ['#ERROR!', '#REF!', '#NAME?', '#VALUE!', '#N/A', '#DIV/0!', '#NUM!'];
+
+/** Повертає список «Аркуш!A1 = #ПОМИЛКА» для всіх клітинок з помилками. */
+function scanErrors_(ss, names) {
+  const found = [];
+  names.forEach(name => {
+    const sh = ss.getSheetByName(name);
+    if (!sh) return;
+    const vals = sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).getDisplayValues();
+    vals.forEach((row, r) => row.forEach((v, c) => {
+      if (ERROR_CODES.indexOf(v) !== -1) found.push(name + '!' + colLetter_(c + 1) + (r + 1) + ' = ' + v);
+    }));
+  });
+  return found;
 }
 
 function deleteTrackerSheets_(ss) {
