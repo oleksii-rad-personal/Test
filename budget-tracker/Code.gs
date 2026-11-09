@@ -227,6 +227,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu(menuTitle_())
     .addItem('👋 Мій профіль (квіз)', 'showQuiz')
+    .addItem('📖 Як користуватись', 'showGuide')
     .addItem('Побудувати трекер з нуля', 'buildTracker')
     .addSeparator()
     .addItem('Заповнити демо-даними', 'fillDemoData')
@@ -668,8 +669,8 @@ const START = { formRow: 14, checkRow: 18, checkLines: 10, profileRow: 31 };
 function buildStart_(sh) {
   styleSheet_(sh);
   sh.setColumnWidth(1, 24);
-  sh.setColumnWidth(2, 40);
-  sh.setColumnWidth(3, 720);
+  sh.setColumnWidth(2, 150);
+  sh.setColumnWidth(3, 640);
   sh.getRange('B2').setValue(spaced_('ТРЕКЕР БЮДЖЕТУ')).setFontSize(22).setFontWeight('bold').setFontColor(THEME.primary);
   sh.getRange('B3').setValue('Вписуєш суму — таблиця сама рахує, скільки можна витратити до наступної виплати.')
     .setFontColor(THEME.muted).setFontStyle('italic');
@@ -698,7 +699,8 @@ function buildStart_(sh) {
   writeBlockTitle_(sh, START.checkRow - 1, 'ПЕРЕВІРКА ТАБЛИЦІ', 2);
   sh.getRange(START.checkRow, 3).setValue('Меню «Трекер» → «Перевірити таблицю».').setFontColor(THEME.muted);
   writeStartProfile_(sh);
-  trimSheet_(sh, 40, 4);
+  writeStartMap_(sh);
+  trimSheet_(sh, 50, 4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2485,6 +2487,19 @@ function yearsWord_(n) {
 }
 
 /** Меню: відкрити квіз. */
+/** Меню: інструкція-екскурсія по таблиці. */
+function showGuide() {
+  const html = HtmlService.createHtmlOutput(quizHtml_('tour')).setWidth(520).setHeight(640);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Як користуватись трекером');
+}
+
+/** З екскурсії: відкрити вкладку. */
+function goToSheet(name) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(name);
+  if (sh) ss.setActiveSheet(sh);
+}
+
 function showQuiz() {
   const html = HtmlService.createHtmlOutput(quizHtml_()).setWidth(520).setHeight(640);
   SpreadsheetApp.getUi().showModalDialog(html, 'Давай познайомимось');
@@ -2534,6 +2549,34 @@ function writeProfileCells_(ss) {
   });
 }
 
+/** «Що де»: посилання на кожну вкладку і навіщо вона. */
+function writeStartMap_(sh) {
+  const ss = sh.getParent();
+  const r0 = START.profileRow + 3;
+  writeBlockTitle_(sh, r0, 'ЩО ДЕ', 2);
+  const map = [
+    [SHEETS.dash, 'головна цифра «можу витратити до виплати», ліміт на день, бюджети й підказки'],
+    [SHEETS.ops, 'сюди вписуєш кожну покупку й надходження (або через форму з телефона)'],
+    [SHEETS.settings, 'дохід і дні виплат, регулярні платежі, бюджети, борги, цілі, рахунки'],
+    [SHEETS.year, 'усі категорії по місяцях, графік і теплова карта'],
+    [SHEETS.goals, 'скільки накопичено і скільки відкладати до бажаної дати'],
+    [SHEETS.debts, 'порядок погашення (сніжна куля) і прогноз закриття'],
+    [SHEETS.subs, 'скільки коштують підписки на рік і що можна скасувати'],
+    [SHEETS.cal, 'витрати по днях місяця, дні без витрат'],
+  ];
+  map.forEach((m, i) => {
+    const target = ss.getSheetByName(m[0]);
+    const cell = sh.getRange(r0 + 1 + i, 2, 1, 2);
+    if (target) sh.getRange(r0 + 1 + i, 2).setFormula(X_('=HYPERLINK("#gid=' + target.getSheetId() + '","' + m[0] + ' ↗")'));
+    else sh.getRange(r0 + 1 + i, 2).setValue(m[0]);
+    sh.getRange(r0 + 1 + i, 3).setValue(m[1]).setFontColor(THEME.muted).setWrap(true);
+    cell.setVerticalAlignment('top');
+  });
+  sh.getRange(r0 + 1, 2, map.length, 1).setFontWeight('bold').setFontColor(THEME.primary);
+  sh.getRange(r0 + map.length + 1, 3).setValue('Покрокова інструкція: меню «Трекер» → «📖 Як користуватись».')
+    .setFontColor(THEME.muted).setFontStyle('italic');
+}
+
 function writeStartProfile_(sh) {
   const p = profile_();
   const r = START.profileRow;
@@ -2550,11 +2593,12 @@ function writeStartProfile_(sh) {
 }
 
 /** HTML квізу. Палітри й поточний профіль підставляються з коду. */
-function quizHtml_() {
+function quizHtml_(startAt) {
   const p = profile_();
   const data = {
     themes: THEMES,
     profile: { name: p.name || '', gender: p.gender || '', age: p.age || 30 },
+    startAt: startAt || 'quiz',
   };
   return QUIZ_HTML.replace('__DATA__', JSON.stringify(data).replace(/</g, '\\u003c'));
 }
@@ -2620,6 +2664,22 @@ const QUIZ_HTML = `<!DOCTYPE html>
   @keyframes r { to { transform:rotate(360deg); } }
   .center { align-items:center; text-align:center; }
   .hint { font-size:12px; color:var(--muted); text-align:center; margin-top:10px; }
+  #tour { justify-content:flex-start; }
+  .tbody { flex:1; overflow:auto; padding:6px 4px 0 0; }
+  .tbody h1 { font-size:23px; }
+  .tbody .emoji { font-size:44px; margin-bottom:10px; }
+  ul.pts { list-style:none; padding:0; margin:0 0 14px; }
+  ul.pts li { position:relative; padding:9px 0 9px 26px; font-size:14.5px; line-height:1.45; border-bottom:1px solid #F0F2F5; }
+  ul.pts li:before { content:""; position:absolute; left:4px; top:16px; width:10px; height:10px; border-radius:50%; background:var(--a); }
+  .tip { background:var(--bg); border-radius:14px; padding:12px 14px; font-size:13.5px; font-weight:600; color:var(--t); margin-bottom:12px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+  .chip { font-size:12px; font-weight:700; border-radius:10px; padding:6px 10px; color:#3D3550; }
+  .open { background:none; border:2px solid var(--bg); color:var(--p); border-radius:12px; padding:9px 12px; font:700 13px Montserrat, Arial; cursor:pointer; margin-bottom:6px; }
+  .open:hover { background:var(--bg); }
+  .dots { display:flex; gap:6px; justify-content:center; flex:1; }
+  .dots i { width:8px; height:8px; border-radius:50%; background:#E1E6EC; transition:background .3s, width .3s; }
+  .dots i.on { background:var(--p); width:22px; border-radius:99px; }
+  .skip { position:absolute; right:22px; top:16px; background:none; border:none; color:var(--muted); font:600 13px Montserrat, Arial; cursor:pointer; z-index:2; }
 </style></head>
 <body><div class="wrap">
   <div class="top" id="top"><div class="steps" id="steps"></div><div class="bar"><i id="bar"></i></div></div>
@@ -2690,7 +2750,16 @@ const QUIZ_HTML = `<!DOCTYPE html>
     <div class="emoji" id="em6">✅</div>
     <h1 id="h6">Готово!</h1>
     <p class="sub" id="p6"></p>
-    <div class="foot" style="width:100%"><button class="btn main" onclick="closeMe()">Відкрити трекер</button></div>
+    <div class="foot" style="width:100%"><button class="btn main" onclick="tour(0)">Як користуватись →</button></div>
+    <button class="link" id="closeLink" onclick="closeMe()">Закрити — розберусь сама</button>
+  </section>
+
+  <section class="screen" id="tour">
+    <button class="skip" onclick="closeMe()">Пропустити</button>
+    <div class="tbody" id="tbody"></div>
+    <div class="foot"><button class="btn ghost" id="tBack" onclick="tour(ti - 1)">← Назад</button>
+      <div class="dots" id="dots"></div>
+      <button class="btn main" id="tNext" style="flex:0 0 160px" onclick="tNext()">Далі</button></div>
   </section>
 </div>
 <script>
@@ -2758,6 +2827,7 @@ const QUIZ_HTML = `<!DOCTYPE html>
         $('p6').textContent = r === 'built'
           ? 'Почни з вкладки «Старт». Кольори й підказки вже налаштовані під тебе 💫'
           : 'Щоб змінити кольори таблиці, вибери в меню «Побудувати трекер з нуля».';
+        $('closeLink').textContent = 'Закрити — розберусь ' + G('сама', 'сам');
         go(6);
       })
       .withFailureHandler(e => {
@@ -2770,6 +2840,84 @@ const QUIZ_HTML = `<!DOCTYPE html>
   }
   function closeMe() { google.script.host.close(); }
 
+  // ── Екскурсія «Як користуватись»
+  let ti = 0;
+  function slides() {
+    const nm = st.name ? st.name : "";
+    return [
+      { e: "🧭", h: (nm ? nm + ", ось" : "Ось") + " як це працює", pts: [
+          "<b>Один раз</b> налаштуй: дохід, обовʼязкові платежі, бюджети на щодень.",
+          "<b>Щодня</b> вписуй суми — в «Операції» або з телефона.",
+          "<b>Дивись велику цифру</b> на «Дашборді» — скільки можна витратити до наступної виплати.",
+        ], tip: "Усе інше таблиця рахує сама. Формул писати не треба." },
+      { e: "⚙️", h: "Налаштування", sheet: "Налаштування", chips: true, pts: [
+          "<b>Дохід</b> — познач основне джерело і день виплати: від нього рахується цикл «до наступної виплати».",
+          "<b>Регулярні витрати</b> — оренда, комуналка, підписки. Ділиш оренду? Вкажи свою частку, напр. 50%.",
+          "<b>Змінні витрати</b> — місячні бюджети на їжу, транспорт, кафе.",
+          "<b>Борги</b> — платіж і залишок, <b>Цілі</b> — на що відкладаєш, <b>Рахунки</b> — картки й готівка.",
+        ], tip: "Почни з доходу й регулярних витрат — це 5 хвилин." },
+      { e: "🧾", h: "Операції", sheet: "Операції", pts: [
+          "Кожна покупка чи надходження — <b>один рядок</b>.",
+          G("Вписала", "Вписав") + " лише суму — <b>дата і «Витрата» поставляться самі</b>.",
+          "Обери <b>тип</b> — у «Категорії» залишаться тільки його категорії.",
+          "<b>Борг</b> — платіж по кредиту чи розстрочці, <b>Заощадження</b> — відкладені гроші.",
+          "Рахунок порожній — гроші з основного рахунку.",
+        ] },
+      { e: "📱", h: "З телефона — за 10 секунд", sheet: "Старт", pts: [
+          "Меню «Трекер» → <b>«Створити / оновити форму для телефону»</b>.",
+          "Посилання зʼявиться на вкладці «Старт» — відкрий його на телефоні й додай на головний екран.",
+          "Сума → тип → категорія → «Надіслати». Рядок сам зʼявиться в «Операціях».",
+        ], tip: "Найзручніше вносити прямо на касі — тоді нічого не забудеш." },
+      { e: "🎯", h: "Дашборд і велика цифра", sheet: "Дашборд", pts: [
+          "<b>Велика цифра</b> — скільки можна витратити до наступної виплати. Оренда, борги й заощадження вже віднято.",
+          "Під нею — <b>ліміт на день</b>. Зелена — ти в нормі, червона — витрачаєш швидше, ніж зазвичай.",
+          "<b>«Як рахується цифра»</b> — звідки вона взялася, рядок за рядком.",
+          "Нижче: дохід, платежі (✓ — оплачено), бюджети зі смужками, борги, цілі, 50/30/20 і <b>3 підказки</b>.",
+          "Вгорі <b>«Період»</b> — подивитися будь-який місяць.",
+        ] },
+      { e: "📊", h: "Огляди", pts: [
+          "<b>Рік</b> — категорії по місяцях, графік «дохід vs витрати» і теплова карта.",
+          "<b>Цілі</b> — скільки накопичено і скільки відкладати щомісяця до бажаної дати.",
+          "<b>Борги</b> — порядок закриття (сніжна куля) і коли будеш " + G("вільна", "вільний") + " від боргів.",
+          "<b>Підписки</b> — скільки коштують на рік і що можна скасувати.",
+          "<b>Календар</b> — витрати по днях: зелений — у межах, червоний — понад бюджет, «—» — день без витрат.",
+        ] },
+      { e: "💡", h: "Кілька порад", last: true, pts: [
+          "Вписуй витрати щодня — це хвилина.",
+          "Раз на тиждень зазирай на «Дашборд» і в «Календар».",
+          G("Пропустила", "Пропустив") + " кілька днів — просто допиши, нічого не зламається.",
+          "Щось не так? Меню «Трекер» → <b>«Перевірити таблицю»</b>.",
+          "Повернутися до цієї інструкції: меню «Трекер» → <b>«📖 Як користуватись»</b>.",
+        ] },
+    ];
+  }
+  function tour(i) {
+    const S = slides();
+    ti = Math.max(0, Math.min(S.length - 1, i));
+    const sl = S[ti];
+    let h = '<div class="emoji">' + sl.e + '</div><h1>' + sl.h + '</h1>';
+    if (sl.chips) h += '<div class="chips"><span class="chip" style="background:#FFF8D6">жовте — заповнюєш ти</span>' +
+      '<span class="chip" style="background:#F2F4F7">сіре — рахується само</span></div>';
+    h += '<ul class="pts">' + sl.pts.map(t => '<li>' + t + '</li>').join('') + '</ul>';
+    if (sl.tip) h += '<div class="tip">💡 ' + sl.tip + '</div>';
+    if (sl.sheet) h += '<button class="open" onclick="openSheet(&quot;' + sl.sheet + '&quot;)">Відкрити «' + sl.sheet + '» ↗</button>';
+    $('tbody').innerHTML = h;
+    $('tbody').scrollTop = 0;
+    $('dots').innerHTML = S.map((x, k) => '<i class="' + (k === ti ? 'on' : '') + '"></i>').join('');
+    $('tBack').style.visibility = ti === 0 ? 'hidden' : 'visible';
+    $('tNext').textContent = sl.last ? 'Почати 🚀' : 'Далі';
+    if (cur !== 'tour') { $(typeof cur === 'number' ? 's' + cur : cur).classList.remove('on'); cur = 'tour'; $('tour').classList.add('on'); }
+    $('top').style.visibility = 'hidden';
+  }
+  function tNext() {
+    const S = slides();
+    if (S[ti].last) { openSheet("Налаштування"); setTimeout(closeMe, 300); return; }
+    tour(ti + 1);
+  }
+  function openSheet(name) {
+    if (window.google && google.script && google.script.run && google.script.run.goToSheet) google.script.run.goToSheet(name);
+  }
+
   swatch('swf', D.themes.f); swatch('swm', D.themes.m);
   $('name').value = st.name;
   $('name').addEventListener('input', () => { $('e1').textContent = ''; });
@@ -2779,7 +2927,9 @@ const QUIZ_HTML = `<!DOCTYPE html>
     if (e.key !== 'Enter') return;
     if (cur === 0) go(1); else if (cur === 1) next1(); else if (cur === 2) next2(); else if (cur === 3) next3();
   });
-  paint(); go(0);
+  paint();
+  $('closeLink').textContent = 'Закрити — розберусь ' + G('сама', 'сам');
+  if (D.startAt === 'tour') tour(0); else go(0);
 </script></body></html>`;
 
 // ─────────────────────────────────────────────────────────────────────────────
