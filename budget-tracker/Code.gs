@@ -1493,11 +1493,20 @@ function selfCheck() {
     periodCell.setValue(REF.current);
     SpreadsheetApp.flush();
     const free = ss.getRangeByName(NR + 'D_Free').getValue();
-    const foreign = countForeignOpsInCycle_(ss);
+    // Твої (не-демо) операції в циклі змінюють цифру: дохід додає, решта віднімає.
+    const cs = ss.getRangeByName(NR + 'C_Start').getValue();
+    const cn = ss.getRangeByName(NR + 'C_Next').getValue();
+    const own = opsRows_(ss).filter(o => o.source !== DEMO_TAG && o.type && o.date instanceof Date && o.date >= cs && o.date < cn);
+    const delta = own.reduce((a, o) => a + (o.type === TYPES.income ? o.amount : -o.amount), 0);
+    const expected = DEMO_EXPECTED + delta;
+    const pass = Math.abs(free - expected) < 0.005;
     const parts = dashCalcLines_(() => '').map(c => c.key + '=' + ss.getRangeByName(NR + c.key).getValue()).join(', ');
-    ok(free === DEMO_EXPECTED, 'Демо: «Можу витратити» = ' + fmtMoney_(free) + ' (очікується ' + fmtMoney_(DEMO_EXPECTED) + ')' +
-      (free === DEMO_EXPECTED ? '' : '. Складові: ' + parts) +
-      (foreign ? '. У циклі є ' + foreign + ' не-демо операцій' : ''));
+    ok(pass, 'Демо: «Можу витратити» = ' + fmtMoney_(free) +
+      (own.length
+        ? ' = ' + fmtMoney_(DEMO_EXPECTED) + ' демо ' + (delta < 0 ? '− ' : '+ ') + fmtMoney_(Math.abs(delta)) +
+          ' (твоїх операцій у циклі: ' + own.length + ')'
+        : ' (очікується ' + fmtMoney_(DEMO_EXPECTED) + ')') +
+      (pass ? '' : '. Має бути ' + fmtMoney_(expected) + '. Складові: ' + parts));
     periodCell.setValue(was);
     SpreadsheetApp.flush();
   } else {
@@ -1595,12 +1604,16 @@ function selfCheck() {
     if (!sh) return;
     const rng = sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns());
     const dv = rng.getDisplayValues();
+    // Власний звіт перевірки на «Старті» не перевіряємо — він описує саму перевірку.
+    if (name === SHEETS.start) {
+      for (let r = START.checkRow - 1; r < Math.min(dv.length, START.checkRow - 1 + START.checkLines); r++) dv[r] = dv[r].map(() => '');
+    }
     const nf = rng.getNumberFormats();
     dv.forEach((row, r) => row.forEach((v, c) => {
       if (String(v).indexOf('$') !== -1 || String(nf[r][c]).indexOf('$') !== -1) dollars.push(name + '!' + colLetter_(c + 1) + (r + 1));
     }));
   });
-  ok(!dollars.length, dollars.length ? 'Знайдено «$»: ' + dollars.slice(0, 10).join(', ') : 'Ніде немає символу $');
+  ok(!dollars.length, dollars.length ? 'Знайдено знак долара: ' + dollars.slice(0, 10).join(', ') : 'Ніде немає знака долара — лише «грн»');
 
   // Запис результату.
   const stamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'dd.MM.yyyy HH:mm');
