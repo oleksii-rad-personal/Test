@@ -224,6 +224,7 @@ const SEEDS = {
 // МЕНЮ
 // ─────────────────────────────────────────────────────────────────────────────
 function onOpen() {
+  try { ensureOwnDocument_(); } catch (e) { /* простий тригер може не мати доступу */ }
   SpreadsheetApp.getUi()
     .createMenu(menuTitle_())
     .addItem('👋 Мій профіль (квіз)', 'showQuiz')
@@ -237,6 +238,7 @@ function onOpen() {
     .addItem('Перевірити таблицю', 'selfCheck')
     .addSeparator()
     .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
+    .addItem('📤 Підготувати копію для поширення', 'makeShareCopy')
     .addToUi();
 }
 
@@ -248,6 +250,7 @@ function onOpen() {
  */
 function buildTracker(opts) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ensureOwnDocument_();
   const fromQuiz = opts && typeof opts === 'object' && 'keep' in opts;
   if (!fromQuiz && !hasProfile_()) {
     try { showQuiz(); return; } catch (e) { /* запуск з редактора — будуємо без квізу */ }
@@ -2184,7 +2187,8 @@ function writeFormLink_(start, url) {
     .setFormula(X_('=HYPERLINK("' + url + '","📱 Відкрити форму «Нова операція»")'))
     .setFontSize(12).setFontWeight('bold').setFontColor(THEME.primary);
   start.getRange(START.formRow + 1, 3)
-    .setValue('Відкрий посилання на телефоні й додай на головний екран («Поділитися» → «На екран Додому»). ' +
+    .setValue('iPhone: відкрий у Safari → «Поділитися» (квадрат зі стрілкою) → «На початковий екран» → «Додати». ' +
+      'Android: відкрий у Chrome → меню ⋮ → «Додати на головний екран». Покроково з картинками: меню «Трекер» → «📖 Як користуватись». ' +
       g_('Змінила', 'Змінив') + ' категорії в «Налаштуваннях» — меню «Створити / оновити форму».')
     .setFontColor(THEME.muted).setFontStyle('italic').setWrap(true);
 }
@@ -2487,47 +2491,215 @@ function yearsWord_(n) {
 }
 
 /** Меню: відкрити квіз. */
-/** Меню: інструкція-екскурсія по таблиці. */
+/** Меню: інструкція в боковій панелі — таблиця лишається доступною. */
 function showGuide() {
-  const html = HtmlService.createHtmlOutput(quizHtml_('tour')).setWidth(520).setHeight(640);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Як користуватись трекером');
+  ensureOwnDocument_();
+  applyProfileTheme_();
+  const html = HtmlService.createHtmlOutput(guideHtml_()).setTitle('Як користуватись трекером');
+  SpreadsheetApp.getUi().showSidebar(html);
 }
 
-/** З екскурсії: відкрити вкладку. */
+/** Відкрити вкладку (з панелі чи квізу). */
 function goToSheet(name) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(name);
-  if (sh) ss.setActiveSheet(sh);
+  if (!sh) return 'Вкладки «' + name + '» ще немає — спершу побудуй трекер.';
+  ss.setActiveSheet(sh);
+  sh.getRange('A1').activate();
+  return 'ok';
+}
+
+/** Крок туру: відкрити вкладку й виділити блок, про який іде мова. */
+function tourFocus(key) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const block = blockKey => {
+    const name = ss.getRangeByName(NR + blockKey + '_Name');
+    if (!name) return null;
+    const sh = name.getSheet();
+    return sh.getRange(name.getRow() - 1, 2, name.getNumRows() + 1, blockWidth_(blockKey));
+  };
+  let rng = null;
+  if (key === 'income') rng = block('Inc');
+  else if (key === 'regular') rng = block('Reg');
+  else if (key === 'variable') rng = block('Var');
+  else if (key === 'debts') rng = block('Debt');
+  else if (key === 'ops') {
+    const sh = ss.getSheetByName(SHEETS.ops);
+    if (sh) rng = sh.getRange(firstFreeOpsRow_(sh), 1, 1, OPS.comment);
+  } else if (key === 'form') {
+    const sh = ss.getSheetByName(SHEETS.start);
+    if (sh) rng = sh.getRange(START.formRow - 1, 2, 3, 2);
+  } else if (key === 'dash') {
+    const sh = ss.getSheetByName(SHEETS.dash);
+    if (sh) rng = sh.getRange(DASH.bigHeadRow, 2, DASH.expectRow - DASH.bigHeadRow + 1, DASH.cols);
+  } else if (key === 'calc') {
+    const sh = ss.getSheetByName(SHEETS.dash);
+    if (sh) rng = sh.getRange(DASH.calcHeadRow, 2, 7, 2);
+  } else {
+    return goToSheet(key);
+  }
+  if (!rng) return 'Спершу побудуй трекер: меню «Трекер» → «Побудувати трекер з нуля».';
+  ss.setActiveSheet(rng.getSheet());
+  rng.activate();
+  return 'ok';
 }
 
 function showQuiz() {
-  const html = HtmlService.createHtmlOutput(quizHtml_()).setWidth(520).setHeight(640);
+  ensureOwnDocument_();
+  const html = HtmlService.createHtmlOutput(quizHtml_()).setWidth(560).setHeight(680);
   SpreadsheetApp.getUi().showModalDialog(html, 'Давай познайомимось');
 }
 
-/** Виклик з квізу. mode: 'build' — перебудувати трекер з профілем, 'save' — лише зберегти. */
-function quizSubmit(p, mode) {
+/**
+ * Виклик з квізу.
+ * mode: 'build' — перебудувати трекер (дані зберігаються), 'save' — без перебудови.
+ * apply: true — записати дохід / платежі / категорії з квізу в «Налаштування».
+ */
+function quizSubmit(p, mode, apply) {
   const name = String(p && p.name || '').trim().replace(/\s+/g, ' ').slice(0, 30);
   const gender = p && (p.gender === 'm' || p.gender === 'f') ? p.gender : '';
   const age = Math.round(Number(p && p.age));
   if (name.length < 2) throw new Error('Ім\'я має бути хоча б з 2 літер.');
   if (!gender) throw new Error('Обери стать.');
   if (!(age >= 14 && age <= 100)) throw new Error('Вік — від 14 до 100.');
-  const old = profile_();
-  const prof = Object.assign({}, old, { name: name, gender: gender, age: age, asOf: todayIso_(SpreadsheetApp.getActiveSpreadsheet()) });
+  const clean = s => String(s || '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  const num = v => { const n = Number(String(v === undefined ? '' : v).replace(/[^0-9.,]/g, '').replace(',', '.')); return n > 0 ? Math.round(n * 100) / 100 : ''; };
+  const day = v => { const n = Math.round(Number(v)); return n >= 1 && n <= 31 ? n : ''; };
+  const income = (p.income || []).map(x => ({ name: clean(x.name), amount: num(x.amount), day: day(x.day), main: !!x.main }))
+    .filter(x => x.name).slice(0, 8);
+  if (income.length && !income.some(x => x.main)) income[0].main = true;
+  const regular = (p.regular || []).map(x => ({ name: clean(x.name), amount: num(x.amount), day: day(x.day),
+    half: !!x.half, debt: !!x.debt, sub: !!x.sub })).filter(x => x.name);
+  const variable = (p.variable || []).map(x => ({ name: clean(x.name), budget: num(x.budget), need: !!x.need }))
+    .filter(x => x.name).slice(0, 12);
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const prof = Object.assign({}, profile_(), {
+    name: name, gender: gender, age: age, asOf: todayIso_(ss),
+    income: income, regular: regular, variable: variable, floating: !!(p && p.floating),
+  });
   PropertiesService.getDocumentProperties().setProperty(PROP_PROFILE, JSON.stringify(prof));
   PROFILE_ = prof;
   applyProfileTheme_();
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let result = 'saved';
   if (mode === 'build' || !ss.getSheetByName(SHEETS.start)) {
     buildTracker({ keep: true });
-    return 'built';
+    result = 'built';
+  } else {
+    writeProfileCells_(ss);
+    const start = ss.getSheetByName(SHEETS.start);
+    if (start) writeStartProfile_(start);
   }
-  writeProfileCells_(ss);
-  const start = ss.getSheetByName(SHEETS.start);
-  if (start) writeStartProfile_(start);
-  return 'saved';
+  if (apply) applyQuizSettings_(ss, prof);
+  return result;
+}
+
+/** Відповіді квізу → блоки «Налаштувань». */
+function applyQuizSettings_(ss, p) {
+  if (!ss.getRangeByName(NR + 'Inc_Name')) return;
+  if (p.income && p.income.length) {
+    setBlockRows_(ss, 'Inc', p.income.map(x => ({ Name: x.name, Main: x.main, Exp: x.amount, Day: x.day })));
+  }
+  const reg = (p.regular || []).filter(x => !x.debt);
+  const debts = (p.regular || []).filter(x => x.debt);
+  if (p.regular && p.regular.length) {
+    setBlockRows_(ss, 'Reg', reg.slice(0, 15).map(x => ({
+      Name: x.name, Total: x.amount, Share: x.half ? 0.5 : 1, Freq: REF.freq[0][0], Day: x.day,
+      Group: x.sub ? REF.groups[1] : REF.groups[0], Sub: x.sub, Use: x.sub,
+    })));
+    setBlockRows_(ss, 'Debt', debts.slice(0, 8).map(x => ({ Name: x.name, Pay: x.amount, Freq: REF.freq[0][0] })));
+  }
+  if (p.variable && p.variable.length) {
+    setBlockRows_(ss, 'Var', p.variable.map(x => ({ Name: x.name, Budget: x.budget, Group: x.need ? REF.groups[0] : REF.groups[1] })));
+  }
+  SpreadsheetApp.flush();
+}
+
+/** Чи є в трекері вже щось своє (тоді квіз питає, чи замінювати налаштування). */
+function trackerHasData_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const any = key => {
+    const r = ss.getRangeByName(NR + key);
+    return r ? r.getValues().some(v => v[0] !== '' && v[0] !== null) : false;
+  };
+  const opsSh = ss.getSheetByName(SHEETS.ops);
+  return any('Inc_Exp') || any('Reg_Total') || any('Var_Budget') || any('Debt_Pay') ||
+    (opsSh ? firstFreeOpsRow_(opsSh) > 2 : false);
+}
+
+/**
+ * Властивості документа копіюються разом зі скриптом. Якщо файл — копія (інший ID),
+ * скидаємо профіль, форму й демо-позначки, щоб нова людина почала з квізу.
+ */
+function ensureOwnDocument_() {
+  const props = PropertiesService.getDocumentProperties();
+  const id = SpreadsheetApp.getActiveSpreadsheet().getId();
+  const stored = props.getProperty('BT_DOC_ID');
+  if (stored && stored !== id) {
+    [PROP_PROFILE, FORM.propId, FORM.propUrl, FORM.propSs, PROP_DEMO].forEach(k => props.deleteProperty(k));
+    const n = Number(props.getProperty(PROP_SNAP + 'N') || 0);
+    for (let i = 0; i < n; i++) props.deleteProperty(PROP_SNAP + i);
+    props.deleteProperty(PROP_SNAP + 'N');
+    PROFILE_ = null;
+  }
+  if (stored !== id) props.setProperty('BT_DOC_ID', id);
+}
+
+/** Меню: чиста копія трекера для поширення (без операцій, сум і профілю). */
+function makeShareCopy() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const copy = ss.copy(ss.getName() + ' — чистий шаблон');
+  const c = SpreadsheetApp.openById(copy.getId());
+  cleanTrackerCopy_(c);
+  const url = 'https://docs.google.com/spreadsheets/d/' + copy.getId() + '/edit';
+  const shareUrl = 'https://docs.google.com/spreadsheets/d/' + copy.getId() + '/copy';
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font:14px Arial;line-height:1.5;color:#2E3A46">' +
+    '<p><b>Готово!</b> Створено чисту копію без твоїх операцій, сум і профілю.</p>' +
+    '<p>1. <a href="' + url + '" target="_blank">Відкрий копію</a> → «Поділитися» → «Усі, хто має посилання» → «Читач».</p>' +
+    '<p>2. Роздавай це посилання — кожен отримає свою копію:</p>' +
+    '<p style="background:#F3F6F9;padding:8px;border-radius:8px;word-break:break-all">' + shareUrl + '</p>' +
+    '<p style="color:#8A9BAA">Свої дані людина внесе сама або через «Імпорт з іншої таблиці».</p></div>')
+    .setWidth(460).setHeight(300);
+  SpreadsheetApp.getUi().showModalDialog(html, '📤 Копія для поширення');
+  return shareUrl;
+}
+
+/** Очищає копію трекера: операції, суми в налаштуваннях, профіль, форма, звіт перевірки. */
+function cleanTrackerCopy_(c) {
+  c.getSheets().forEach(s => {
+    if (s.getFormUrl && s.getFormUrl()) { try { FormApp.openByUrl(s.getFormUrl()).removeDestination(); } catch (e) { /* ок */ } }
+    if (s.getName().indexOf(FORM.responsesSheet) === 0) c.deleteSheet(s);
+  });
+  const ops = c.getSheetByName(SHEETS.ops);
+  if (ops) {
+    const blank = new Array(OPS_HEADERS.length).fill('');
+    writeOpsRows_(ops, 2, Array.from({ length: DATA_ROWS - 1 }, () => blank.slice()));
+  }
+  if (c.getRangeByName(NR + 'Inc_Name')) {
+    SETTINGS_BLOCKS.forEach(b => setBlockRows_(c, b.key, SEEDS[b.key] || []));
+    const t = todayParts_(c);
+    setKV_(c, { Year: t.y, Start: isoDate_(t.y, t.m, 1), Calc: '', Cycle: REF.cycle[0], Warn: 0.8, Over: 1, Needs: 0.5, Wants: 0.3, Save: 0.2 });
+  }
+  const lists = c.getSheetByName(SHEETS.lists);
+  if (lists) PROFILE_FIELDS.forEach((f, i) => lists.getRange(2 + i, 19).setValue(''));
+  const start = c.getSheetByName(SHEETS.start);
+  if (start) {
+    start.getRange(3, 2).setValue('Вписуєш суму — таблиця сама рахує, скільки можна витратити до наступної виплати.');
+    start.getRange(START.formRow, 3).setValue('Ще не створена: меню «Трекер» → «Створити / оновити форму для телефону».');
+    start.getRange(START.formRow + 1, 3).setValue('');
+    start.getRange(START.checkRow, 3, START.checkLines, 1).clearContent();
+    start.getRange(START.checkRow, 3).setValue('Меню «Трекер» → «Перевірити таблицю».');
+    start.getRange(START.profileRow, 3).setValue('Ще не заповнений — меню «Трекер» → «👋 Мій профіль (квіз)».');
+  }
+  const dash = c.getSheetByName(SHEETS.dash);
+  if (dash) {
+    const cell = dash.getRange(DASH.sentenceRow, 2);
+    const n = nameComma_();
+    if (n) cell.setFormula(cell.getFormula().split('"' + n.replace(/""/g, '"')).join('"'));
+  }
+  SpreadsheetApp.flush();
 }
 
 /** Профіль у прихованих «_Списках» — для майбутнього пенсійного калькулятора. */
@@ -2592,106 +2764,121 @@ function writeStartProfile_(sh) {
     .setFontColor(THEME.muted).setFontStyle('italic');
 }
 
-/** HTML квізу. Палітри й поточний профіль підставляються з коду. */
-function quizHtml_(startAt) {
+/** HTML квізу: палітри, поточні відповіді й чи є вже дані в трекері. */
+function quizHtml_() {
   const p = profile_();
   const data = {
     themes: THEMES,
-    profile: { name: p.name || '', gender: p.gender || '', age: p.age || 30 },
-    startAt: startAt || 'quiz',
+    hasData: (() => { try { return trackerHasData_(); } catch (e) { return false; } })(),
+    profile: {
+      name: p.name || '', gender: p.gender || '', age: p.age || 30, floating: !!p.floating,
+      income: p.income || [], regular: (p.regular || []).map(x => Object.assign({ key: 'r' + Math.random(), e: '📌' }, x)),
+      variable: p.variable || [],
+    },
   };
-  return QUIZ_HTML.replace('__DATA__', JSON.stringify(data).replace(/</g, '\\u003c'));
+  return QUIZ_HTML.replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c'));
 }
 
-const QUIZ_HTML = `<!DOCTYPE html>
+/** HTML бокової панелі-інструкції. */
+function guideHtml_() {
+  const p = profile_();
+  const data = {
+    name: p.name || '', gender: p.gender || '', theme: THEME,
+    formUrl: PropertiesService.getDocumentProperties().getProperty(FORM.propUrl) || '',
+  };
+  return GUIDE_HTML
+    .replace('__QRLIB__', () => QR_LIB)
+    .replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c'));
+}
+
+// HTML і бібліотека — як «сирі» рядки: зворотні скісні риски не інтерпретуються.
+const QUIZ_HTML = String.raw`<!DOCTYPE html>
 <html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
-  :root { --p:#6F8FB3; --a:#A9C6E0; --bg:#EEF3F8; --t:#34506B; --ink:#2E3A46; --muted:#8A9BAA; --err:#D9534F; }
+  :root { --p:#6F8FB3; --a:#A9C6E0; --bg:#EEF3F8; --t:#34506B; --ink:#2E3A46; --muted:#8A9BAA; --err:#D9534F; --line:#E7EBF0; }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; font-family:Montserrat, Arial, sans-serif; color:var(--ink); background:#fff; }
-  body { transition: background .4s; }
-  .wrap { display:flex; flex-direction:column; height:100%; padding:22px 26px 20px; }
-  .top { display:flex; align-items:center; gap:12px; min-height:24px; }
+  .wrap { display:flex; flex-direction:column; height:100%; padding:18px 24px 18px; }
+  .top { display:flex; align-items:center; gap:12px; min-height:22px; margin-bottom:6px; }
   .steps { font-size:13px; font-weight:700; color:var(--muted); white-space:nowrap; }
-  .bar { flex:1; height:6px; background:var(--bg); border-radius:99px; overflow:hidden; transition:background .4s; }
-  .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--p),var(--a)); border-radius:99px; transition:width .45s ease, background .4s; }
-  .screen { flex:1; display:none; flex-direction:column; justify-content:center; animation:in .35s ease; }
+  .bar { flex:1; height:6px; background:var(--bg); border-radius:99px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:linear-gradient(90deg,var(--p),var(--a)); border-radius:99px; transition:width .45s ease; }
+  .screen { flex:1; display:none; flex-direction:column; min-height:0; animation:in .3s ease; }
   .screen.on { display:flex; }
-  @keyframes in { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
-  .emoji { font-size:52px; line-height:1; margin-bottom:14px; }
-  h1 { font-size:26px; font-weight:800; margin:0 0 10px; color:var(--t); transition:color .4s; line-height:1.2; }
-  p.sub { font-size:15px; color:var(--muted); margin:0 0 22px; line-height:1.45; }
-  input[type=text] { width:100%; font:600 22px Montserrat, Arial; padding:16px 18px; border:2px solid var(--bg); border-radius:16px;
-    outline:none; color:var(--ink); background:#fff; transition:border-color .2s; }
-  input[type=text]:focus { border-color:var(--p); box-shadow:0 0 0 4px var(--bg); }
-  .err { color:var(--err); font-size:13px; font-weight:600; min-height:20px; margin-top:8px; }
+  .screen.mid { justify-content:center; }
+  @keyframes in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  .body { flex:1; overflow:auto; min-height:0; padding:4px 2px 6px; }
+  .emoji { font-size:46px; line-height:1; margin-bottom:10px; }
+  h1 { font-size:24px; font-weight:800; margin:0 0 8px; color:var(--t); line-height:1.2; }
+  p.sub { font-size:14.5px; color:var(--muted); margin:0 0 16px; line-height:1.45; }
+  input[type=text], input.money, select { font:600 16px Montserrat, Arial; padding:12px 14px; border:2px solid var(--line); border-radius:14px; outline:none; color:var(--ink); background:#fff; }
+  input:focus, select:focus { border-color:var(--p); box-shadow:0 0 0 3px var(--bg); }
+  #name { width:100%; font-size:22px; padding:16px 18px; }
+  .err { color:var(--err); font-size:13px; font-weight:600; min-height:18px; margin-top:6px; }
   .cards { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  .card { border:2px solid #E7EBF0; border-radius:20px; padding:20px 14px 16px; text-align:center; cursor:pointer;
-    transition:transform .15s, border-color .2s, box-shadow .2s; background:#fff; user-select:none; }
-  .card:hover { transform:translateY(-2px); box-shadow:0 8px 22px rgba(0,0,0,.07); }
+  .card { border:2px solid var(--line); border-radius:20px; padding:18px 12px 14px; text-align:center; cursor:pointer; background:#fff; user-select:none; transition:transform .15s, border-color .2s; }
+  .card:hover { transform:translateY(-2px); }
   .card.sel { border-color:var(--p); box-shadow:0 0 0 4px var(--bg); }
-  .card .e { font-size:46px; }
-  .card b { display:block; font-size:18px; margin:10px 0 4px; }
-  .card small { color:var(--muted); font-size:12px; }
-  .sw { display:flex; justify-content:center; gap:5px; margin-top:10px; }
-  .sw span { width:18px; height:18px; border-radius:50%; }
-  .age { display:flex; align-items:center; justify-content:center; gap:18px; margin:6px 0 18px; }
-  .round { width:54px; height:54px; border-radius:50%; border:2px solid var(--bg); background:#fff; font:700 26px Montserrat, Arial;
-    color:var(--p); cursor:pointer; transition:background .2s; }
-  .round:hover { background:var(--bg); }
-  .num { font:800 64px Montserrat, Arial; color:var(--t); width:130px; text-align:center; border:none; outline:none; background:none; }
-  .unit { text-align:center; color:var(--muted); font-weight:600; margin-top:-14px; margin-bottom:12px; }
+  .card .e { font-size:42px; } .card b { display:block; font-size:17px; margin:8px 0 4px; } .card small { color:var(--muted); font-size:12px; }
+  .sw { display:flex; justify-content:center; gap:5px; margin-top:8px; } .sw span { width:16px; height:16px; border-radius:50%; }
+  .age { display:flex; align-items:center; justify-content:center; gap:18px; margin:4px 0 12px; }
+  .round { width:52px; height:52px; border-radius:50%; border:2px solid var(--bg); background:#fff; font:700 26px Montserrat, Arial; color:var(--p); cursor:pointer; }
+  .num { font:800 60px Montserrat, Arial; color:var(--t); width:130px; text-align:center; border:none; outline:none; background:none; }
+  .unit { text-align:center; color:var(--muted); font-weight:600; margin-top:-12px; margin-bottom:10px; }
   input[type=range] { width:100%; accent-color:var(--p); }
-  .sum { display:flex; flex-direction:column; gap:10px; }
-  .row { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-radius:16px; background:var(--bg);
-    cursor:pointer; transition:filter .2s, background .4s; }
-  .row:hover { filter:brightness(.97); }
-  .row span { color:var(--muted); font-size:13px; font-weight:600; }
-  .row b { font-size:17px; }
-  .row em { font-style:normal; color:var(--p); font-size:13px; font-weight:700; margin-left:10px; }
-  .foot { display:flex; gap:12px; align-items:center; margin-top:16px; }
-  .btn { flex:1; border:none; border-radius:16px; padding:16px 18px; font:700 16px Montserrat, Arial; cursor:pointer;
-    transition:transform .1s, opacity .2s, background .4s; }
-  .btn:active { transform:scale(.98); }
-  .btn.main { background:var(--p); color:#fff; }
-  .btn.main:disabled { opacity:.4; cursor:default; }
-  .btn.ghost { flex:0 0 auto; background:none; color:var(--muted); padding:16px 10px; }
-  .link { background:none; border:none; color:var(--muted); font:600 13px Montserrat, Arial; text-decoration:underline; cursor:pointer;
-    margin-top:12px; align-self:center; }
-  .spin { width:56px; height:56px; border-radius:50%; border:6px solid var(--bg); border-top-color:var(--p); animation:r 1s linear infinite; margin-bottom:22px; }
+  /* дохід */
+  .src { border:2px solid var(--line); border-radius:16px; padding:10px 12px; margin-bottom:10px; }
+  .src.main { border-color:var(--p); }
+  .src .r1, .src .r2 { display:flex; gap:8px; align-items:center; }
+  .src .r2 { margin-top:8px; }
+  .src .nm { flex:1; min-width:0; }
+  .src .money { width:150px; }
+  .src select { width:150px; }
+  .lbl { font-size:12px; color:var(--muted); font-weight:600; }
+  .icon { border:none; background:none; font-size:20px; cursor:pointer; padding:4px 6px; color:var(--muted); border-radius:8px; }
+  .icon.star.on { color:#F2B300; }
+  .badge { font-size:11px; font-weight:700; color:#fff; background:var(--p); border-radius:8px; padding:2px 7px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
+  .chip { border:2px solid var(--line); background:#fff; border-radius:99px; padding:8px 12px; font:600 13.5px Montserrat, Arial; cursor:pointer; color:var(--ink); user-select:none; }
+  .chip.sel { border-color:var(--p); background:var(--bg); color:var(--t); }
+  .chip.add { border-style:dashed; color:var(--p); }
+  .check { display:flex; gap:8px; align-items:center; font-size:13.5px; color:var(--ink); margin:4px 0 10px; cursor:pointer; }
+  .check input { width:18px; height:18px; accent-color:var(--p); }
+  .det { border-radius:14px; background:var(--bg); padding:10px 12px; margin-bottom:8px; }
+  .det .h { font-weight:700; font-size:14px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+  .det .r { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .det .money { width:150px; padding:9px 12px; font-size:15px; }
+  .det select { padding:9px 10px; font-size:14px; }
+  .det .nm { flex:1; min-width:120px; padding:9px 12px; font-size:15px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.4; }
+  /* підсумок */
+  .blk { border-radius:16px; background:var(--bg); padding:10px 14px; margin-bottom:10px; cursor:pointer; }
+  .blk .bh { display:flex; justify-content:space-between; font-weight:700; color:var(--t); font-size:14px; }
+  .blk .bh em { font-style:normal; color:var(--p); font-size:12.5px; }
+  .blk .bb { font-size:13.5px; margin-top:4px; line-height:1.5; color:var(--ink); }
+  .foot { display:flex; gap:12px; align-items:center; margin-top:12px; }
+  .btn { flex:1; border:none; border-radius:16px; padding:15px 18px; font:700 16px Montserrat, Arial; cursor:pointer; }
+  .btn.main { background:var(--p); color:#fff; } .btn.main:disabled { opacity:.4; cursor:default; }
+  .btn.ghost { flex:0 0 auto; background:none; color:var(--muted); padding:15px 8px; }
+  .btn.soft { background:var(--bg); color:var(--t); }
+  .link { background:none; border:none; color:var(--muted); font:600 13px Montserrat, Arial; text-decoration:underline; cursor:pointer; margin-top:10px; align-self:center; }
+  .spin { width:56px; height:56px; border-radius:50%; border:6px solid var(--bg); border-top-color:var(--p); animation:r 1s linear infinite; margin-bottom:20px; }
   @keyframes r { to { transform:rotate(360deg); } }
   .center { align-items:center; text-align:center; }
-  .hint { font-size:12px; color:var(--muted); text-align:center; margin-top:10px; }
-  #tour { justify-content:flex-start; }
-  .tbody { flex:1; overflow:auto; padding:6px 4px 0 0; }
-  .tbody h1 { font-size:23px; }
-  .tbody .emoji { font-size:44px; margin-bottom:10px; }
-  ul.pts { list-style:none; padding:0; margin:0 0 14px; }
-  ul.pts li { position:relative; padding:9px 0 9px 26px; font-size:14.5px; line-height:1.45; border-bottom:1px solid #F0F2F5; }
-  ul.pts li:before { content:""; position:absolute; left:4px; top:16px; width:10px; height:10px; border-radius:50%; background:var(--a); }
-  .tip { background:var(--bg); border-radius:14px; padding:12px 14px; font-size:13.5px; font-weight:600; color:var(--t); margin-bottom:12px; }
-  .chips { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
-  .chip { font-size:12px; font-weight:700; border-radius:10px; padding:6px 10px; color:#3D3550; }
-  .open { background:none; border:2px solid var(--bg); color:var(--p); border-radius:12px; padding:9px 12px; font:700 13px Montserrat, Arial; cursor:pointer; margin-bottom:6px; }
-  .open:hover { background:var(--bg); }
-  .dots { display:flex; gap:6px; justify-content:center; flex:1; }
-  .dots i { width:8px; height:8px; border-radius:50%; background:#E1E6EC; transition:background .3s, width .3s; }
-  .dots i.on { background:var(--p); width:22px; border-radius:99px; }
-  .skip { position:absolute; right:22px; top:16px; background:none; border:none; color:var(--muted); font:600 13px Montserrat, Arial; cursor:pointer; z-index:2; }
 </style></head>
 <body><div class="wrap">
   <div class="top" id="top"><div class="steps" id="steps"></div><div class="bar"><i id="bar"></i></div></div>
 
-  <section class="screen on" id="s0">
+  <section class="screen mid on" id="s0">
     <div class="emoji">👋</div>
     <h1>Привіт! Давай познайомимось</h1>
-    <p class="sub">3 короткі питання — і я налаштую трекер саме під тебе: кольори, звертання й підказки. Це займе хвилину.</p>
+    <p class="sub">6 коротких питань — і я одразу заповню перший варіант трекера: кольори, звертання, твій дохід і основні витрати. Відповіді можна змінити будь-коли.</p>
     <div class="foot"><button class="btn main" onclick="go(1)">Почати</button></div>
   </section>
 
-  <section class="screen" id="s1">
+  <section class="screen mid" id="s1">
     <div class="emoji">✍️</div>
     <h1>Як тебе звати?</h1>
     <p class="sub">Саме так я до тебе звертатимусь у таблиці.</p>
@@ -2700,26 +2887,23 @@ const QUIZ_HTML = `<!DOCTYPE html>
     <div class="foot"><button class="btn ghost" onclick="go(0)">← Назад</button><button class="btn main" onclick="next1()">Далі</button></div>
   </section>
 
-  <section class="screen" id="s2">
+  <section class="screen mid" id="s2">
     <div class="emoji">🎨</div>
     <h1 id="h2">Як до тебе звертатись?</h1>
     <p class="sub">Від цього залежать кольори таблиці й те, як я пишу підказки.</p>
     <div class="cards">
-      <div class="card" id="cf" onclick="pick('f')"><div class="e">👩</div><b>Жінка</b><small>лілово-рожева тема</small>
-        <div class="sw" id="swf"></div></div>
-      <div class="card" id="cm" onclick="pick('m')"><div class="e">👨</div><b>Чоловік</b><small>блакитна тема</small>
-        <div class="sw" id="swm"></div></div>
+      <div class="card" id="cf" onclick="pick('f')"><div class="e">👩</div><b>Жінка</b><small>лілово-рожева тема</small><div class="sw" id="swf"></div></div>
+      <div class="card" id="cm" onclick="pick('m')"><div class="e">👨</div><b>Чоловік</b><small>блакитна тема</small><div class="sw" id="swm"></div></div>
     </div>
     <div class="err" id="e2"></div>
     <div class="foot"><button class="btn ghost" onclick="go(1)">← Назад</button><button class="btn main" id="b2" onclick="next2()" disabled>Далі</button></div>
   </section>
 
-  <section class="screen" id="s3">
+  <section class="screen mid" id="s3">
     <div class="emoji">🎂</div>
     <h1>Скільки тобі років?</h1>
     <p class="sub">Знадобиться пізніше — щоб порахувати, скільки часу є до пенсії і скільки відкладати.</p>
-    <div class="age"><button class="round" onclick="bump(-1)">−</button>
-      <input class="num" id="age" inputmode="numeric" maxlength="3"><button class="round" onclick="bump(1)">+</button></div>
+    <div class="age"><button class="round" onclick="bump(-1)">−</button><input class="num" id="age" inputmode="numeric" maxlength="3"><button class="round" onclick="bump(1)">+</button></div>
     <div class="unit" id="unit">років</div>
     <input type="range" id="range" min="14" max="100">
     <div class="err" id="e3"></div>
@@ -2727,48 +2911,106 @@ const QUIZ_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="screen" id="s4">
-    <div class="emoji">🎉</div>
-    <h1 id="h4">Готово!</h1>
-    <p class="sub" id="p4">Перевір — натисни на рядок, щоб змінити.</p>
-    <div class="sum">
-      <div class="row" onclick="go(1)"><span>Ім'я</span><div><b id="vName"></b><em>змінити</em></div></div>
-      <div class="row" onclick="go(2)"><span>Звертання</span><div><b id="vGen"></b><em>змінити</em></div></div>
-      <div class="row" onclick="go(3)"><span>Вік</span><div><b id="vAge"></b><em>змінити</em></div></div>
+    <div class="body">
+      <div class="emoji">💰</div>
+      <h1>Звідки приходять гроші?</h1>
+      <p class="sub">Вкажи джерела доходу, суму й число місяця, коли вони приходять. ★ — основне: від його дня я рахую «до наступної виплати».</p>
+      <div id="srcs"></div>
+      <div class="chips" id="srcAdd"></div>
+      <label class="check"><input type="checkbox" id="floating"> Сума щоразу різна — впишу фактичні суми, коли прийдуть</label>
+      <div class="err" id="e4"></div>
     </div>
-    <div class="foot"><button class="btn main" onclick="send('build')" id="bBuild">Створити мій трекер</button></div>
-    <button class="link" onclick="send('save')">Лише зберегти профіль</button>
-    <div class="hint">Твої операції й налаштування збережуться.</div>
+    <div class="foot"><button class="btn ghost" onclick="go(3)">← Назад</button><button class="btn main" onclick="next4()">Далі</button></div>
   </section>
 
-  <section class="screen center" id="s5">
+  <section class="screen" id="s5">
+    <div class="body">
+      <div class="emoji">🏠</div>
+      <h1>Обовʼязкові платежі</h1>
+      <p class="sub">Що ти платиш щомісяця? Обери — і впиши суму та число. Якщо не знаєш точно — пропусти, можна дописати потім.</p>
+      <div class="chips" id="regChips"></div>
+      <div id="regDet"></div>
+    </div>
+    <div class="foot"><button class="btn ghost" onclick="go(4)">← Назад</button><button class="btn main" onclick="next5()">Далі</button></div>
+  </section>
+
+  <section class="screen" id="s6">
+    <div class="body">
+      <div class="emoji">🛒</div>
+      <h1>На що йдуть гроші щодня?</h1>
+      <p class="sub">Обери свої основні категорії витрат. Бюджет на місяць — за бажанням: тоді трекер покаже, скільки ще лишилось.</p>
+      <div class="chips" id="varChips"></div>
+      <div id="varDet"></div>
+    </div>
+    <div class="foot"><button class="btn ghost" onclick="go(5)">← Назад</button><button class="btn main" onclick="next6()">Далі</button></div>
+  </section>
+
+  <section class="screen" id="s7">
+    <div class="body">
+      <div class="emoji">🎉</div>
+      <h1 id="h7">Готово!</h1>
+      <p class="sub" id="p7">Перевір — натисни на блок, щоб змінити.</p>
+      <div id="sum"></div>
+    </div>
+    <div id="replaceBox" style="display:none">
+      <label class="check"><input type="checkbox" id="replace" checked> Записати ці дохід і витрати в «Налаштування» (замінить те, що там зараз)</label>
+    </div>
+    <div class="foot"><button class="btn main" onclick="send('build')">Створити мій трекер</button></div>
+    <button class="link" onclick="send('save')">Лише зберегти, без перебудови</button>
+  </section>
+
+  <section class="screen mid center" id="s8">
     <div class="spin"></div>
-    <h1 id="h5">Будую твій трекер…</h1>
-    <p class="sub" id="p5">Це до хвилини.</p>
+    <h1 id="h8">Будую твій трекер…</h1>
+    <p class="sub" id="p8">Це до хвилини — можеш поки зробити чай ☕</p>
   </section>
 
-  <section class="screen center" id="s6">
-    <div class="emoji" id="em6">✅</div>
-    <h1 id="h6">Готово!</h1>
-    <p class="sub" id="p6"></p>
-    <div class="foot" style="width:100%"><button class="btn main" onclick="tour(0)">Як користуватись →</button></div>
-    <button class="link" id="closeLink" onclick="closeMe()">Закрити — розберусь сама</button>
-  </section>
-
-  <section class="screen" id="tour">
-    <button class="skip" onclick="closeMe()">Пропустити</button>
-    <div class="tbody" id="tbody"></div>
-    <div class="foot"><button class="btn ghost" id="tBack" onclick="tour(ti - 1)">← Назад</button>
-      <div class="dots" id="dots"></div>
-      <button class="btn main" id="tNext" style="flex:0 0 160px" onclick="tNext()">Далі</button></div>
+  <section class="screen mid center" id="s9">
+    <div class="emoji" id="em9">✅</div>
+    <h1 id="h9">Готово!</h1>
+    <p class="sub" id="p9"></p>
+    <div class="foot" style="width:100%"><button class="btn main" onclick="openGuide()">Як користуватись →</button></div>
+    <button class="link" id="closeLink" onclick="closeMe()">Закрити</button>
   </section>
 </div>
 <script>
   const D = __DATA__;
-  const st = { name: D.profile.name, gender: D.profile.gender, age: D.profile.age || 30 };
+  const P = D.profile;
+  const st = {
+    name: P.name || '', gender: P.gender || '', age: P.age || 30,
+    income: (P.income && P.income.length) ? P.income : [{ name: 'Зарплата', amount: '', day: 1, main: true }],
+    floating: !!P.floating,
+    regular: P.regular || [],
+    variable: (P.variable && P.variable.length) ? P.variable : [{ name: 'Їжа', budget: '', need: true }, { name: 'Транспорт', budget: '', need: true }],
+  };
+  const REG = [
+    { key: 'rent', e: '🏠', name: 'Оренда / іпотека', half: true },
+    { key: 'util', e: '💡', name: 'Комуналка' },
+    { key: 'net', e: '📶', name: 'Інтернет і звʼязок' },
+    { key: 'credit', e: '💳', name: 'Кредит / розстрочка', debt: true },
+    { key: 'subs', e: '📺', name: 'Підписки', sub: true },
+    { key: 'kids', e: '🧒', name: 'Садочок / школа' },
+    { key: 'ins', e: '🛡️', name: 'Страховка' },
+    { key: 'sport', e: '🏋️', name: 'Спортзал' },
+  ];
+  const VARS = [
+    ['🍎', 'Їжа', 1], ['🚌', 'Транспорт', 1], ['☕', 'Кафе й доставка', 0], ['💅', 'Краса й здоровʼя', 1],
+    ['👗', 'Одяг', 0], ['🎬', 'Розваги', 0], ['🎁', 'Подарунки', 0], ['🧸', 'Діти', 1], ['🐾', 'Тварини', 1],
+    ['⚽', 'Спорт і хобі', 0], ['🚗', 'Авто', 1], ['💊', 'Аптека', 1],
+  ];
   let cur = 0;
+  const TOTAL = 6;
   const $ = id => document.getElementById(id);
   const G = (f, m) => st.gender === 'm' ? m : f;
   const yw = n => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? 'рік' : (a >= 2 && a <= 4 && (b < 12 || b > 14) ? 'роки' : 'років'); };
+  const esc = s => String(s === undefined || s === null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const money = v => { const n = Number(String(v || '').replace(/[^0-9.,]/g, '').replace(',', '.')); return n > 0 ? n : ''; };
+  const fmt = n => n ? Math.round(n).toString().replace(/(\d)(?=(\d{3})+$)/g, '$1 ') + ' грн' : '';
+  function dayOptions(sel, allowIrr) {
+    let h = allowIrr ? '<option value=""' + (sel ? '' : ' selected') + '>нерегулярно</option>' : '<option value="">число —</option>';
+    for (let d = 1; d <= 31; d++) h += '<option value="' + d + '"' + (Number(sel) === d ? ' selected' : '') + '>' + d + '-го</option>';
+    return h;
+  }
 
   function paint() {
     const t = st.gender ? D.themes[st.gender] : null;
@@ -2781,142 +3023,154 @@ const QUIZ_HTML = `<!DOCTYPE html>
   function swatch(id, t) { $(id).innerHTML = [t.primary, t.accent, t.headerBg].map(c => '<span style="background:' + c + '"></span>').join(''); }
 
   function go(n) {
-    $('s' + cur).classList.remove('on'); cur = n; $('s' + n).classList.add('on');
-    const q = Math.min(Math.max(n, 0), 3);
-    $('top').style.visibility = n >= 1 && n <= 3 ? 'visible' : 'hidden';
-    $('steps').textContent = 'Крок ' + q + ' / 3';
-    $('bar').style.width = (n >= 4 ? 100 : q / 3 * 100) + '%';
+    document.querySelectorAll('.screen.on').forEach(e => e.classList.remove('on'));
+    cur = n; $('s' + n).classList.add('on');
+    const q = Math.min(Math.max(n, 0), TOTAL);
+    $('top').style.visibility = n >= 1 && n <= TOTAL ? 'visible' : 'hidden';
+    $('steps').textContent = 'Крок ' + q + ' / ' + TOTAL;
+    $('bar').style.width = (n > TOTAL ? 100 : q / TOTAL * 100) + '%';
     if (n === 1) setTimeout(() => $('name').focus(), 60);
     if (n === 2) $('h2').textContent = st.name + ', як до тебе звертатись?';
-    if (n === 3) { setAge(st.age); setTimeout(() => $('age').focus(), 60); }
-    if (n === 4) summary();
+    if (n === 3) setAge(st.age);
+    if (n === 4) renderSrc();
+    if (n === 5) renderReg();
+    if (n === 6) renderVar();
+    if (n === 7) summary();
   }
+
+  // 1–3
   function next1() {
-    const v = $('name').value.trim().replace(/\\s+/g, ' ');
-    if (v.length < 2) { $('e1').textContent = 'Напиши ім\\'я — хоча б 2 літери.'; return; }
-    if (!/^[A-Za-zА-Яа-яІіЇїЄєҐґʼ'’ -]+$/.test(v)) { $('e1').textContent = 'Лише літери, пробіл, дефіс чи апостроф.'; return; }
+    const v = $('name').value.trim().replace(/ +/g, ' ');
+    if (v.length < 2) { $('e1').textContent = 'Напиши імʼя — хоча б 2 літери.'; return; }
+    if (/[0-9<>"{}]/.test(v)) { $('e1').textContent = 'Лише літери, пробіл, дефіс чи апостроф.'; return; }
     $('e1').textContent = ''; st.name = v; go(2);
   }
   function pick(g) { st.gender = g; $('e2').textContent = ''; paint(); }
   function next2() { if (!st.gender) { $('e2').textContent = 'Обери один варіант.'; return; } go(3); }
-  function setAge(n) {
-    n = Math.max(14, Math.min(100, Math.round(Number(n) || 30)));
-    st.age = n; $('age').value = n; $('range').value = n; $('unit').textContent = yw(n);
-  }
+  function setAge(n) { n = Math.max(14, Math.min(100, Math.round(Number(n) || 30))); st.age = n; $('age').value = n; $('range').value = n; $('unit').textContent = yw(n); }
   function bump(d) { setAge(st.age + d); }
-  function next3() {
-    const n = Number($('age').value);
-    if (!(n >= 14 && n <= 100)) { $('e3').textContent = 'Вкажи вік від 14 до 100.'; return; }
-    $('e3').textContent = ''; setAge(n); go(4);
+  function next3() { const n = Number($('age').value); if (!(n >= 14 && n <= 100)) { $('e3').textContent = 'Вкажи вік від 14 до 100.'; return; } $('e3').textContent = ''; setAge(n); go(4); }
+
+  // 4. Дохід
+  function renderSrc() {
+    $('srcs').innerHTML = st.income.map((s, i) =>
+      '<div class="src' + (s.main ? ' main' : '') + '">' +
+        '<div class="r1"><input type="text" class="nm" value="' + esc(s.name) + '" placeholder="Назва джерела" oninput="st.income[' + i + '].name=this.value">' +
+        (s.main ? '<span class="badge">основне</span>' : '') +
+        '<button class="icon star' + (s.main ? ' on' : '') + '" title="Зробити основним" onclick="mainSrc(' + i + ')">★</button>' +
+        (st.income.length > 1 ? '<button class="icon" title="Прибрати" onclick="delSrc(' + i + ')">✕</button>' : '') + '</div>' +
+        '<div class="r2"><input class="money" inputmode="decimal" placeholder="сума, грн" value="' + esc(s.amount) + '" oninput="st.income[' + i + '].amount=this.value">' +
+        '<select onchange="st.income[' + i + '].day=this.value">' + dayOptions(s.day, true) + '</select></div>' +
+      '</div>').join('');
+    const used = st.income.map(s => s.name);
+    $('srcAdd').innerHTML = ['Аванс', 'Фріланс', 'Підробіток', 'Інше']
+      .filter(n => used.indexOf(n) === -1 || n === 'Інше')
+      .map(n => '<span class="chip add" onclick="addSrc(&quot;' + n + '&quot;)">+ ' + n + '</span>').join('');
+    $('floating').checked = st.floating;
   }
+  function addSrc(n) { if (st.income.length >= 8) return; st.income.push({ name: n === 'Інше' ? '' : n, amount: '', day: n === 'Аванс' ? 15 : '', main: false }); renderSrc(); }
+  function delSrc(i) { const wasMain = st.income[i].main; st.income.splice(i, 1); if (wasMain && st.income.length) st.income[0].main = true; renderSrc(); }
+  function mainSrc(i) { st.income.forEach((s, k) => { s.main = k === i; }); renderSrc(); }
+  function next4() {
+    st.floating = $('floating').checked;
+    st.income = st.income.filter(s => String(s.name).trim());
+    if (!st.income.length) { st.income = [{ name: 'Зарплата', amount: '', day: 1, main: true }]; renderSrc(); $('e4').textContent = 'Додай хоча б одне джерело доходу.'; return; }
+    if (!st.income.some(s => s.main)) st.income[0].main = true;
+    const m = st.income.filter(s => s.main)[0];
+    if (!st.floating && !money(m.amount)) { $('e4').textContent = 'Впиши суму основного доходу або познач «сума щоразу різна».'; renderSrc(); return; }
+    $('e4').textContent = ''; go(5);
+  }
+
+  // 5. Обов'язкові
+  function findReg(r) { return st.regular.filter(x => x.key === r.key)[0]; }
+  function renderReg() {
+    $('regChips').innerHTML = REG.map(r => '<span class="chip' + (findReg(r) ? ' sel' : '') + '" onclick="togReg(&quot;' + r.key + '&quot;)">' + r.e + ' ' + r.name + '</span>').join('') +
+      '<span class="chip add" onclick="addOwnReg()">+ Своє</span>';
+    $('regDet').innerHTML = st.regular.map((x, i) =>
+      '<div class="det"><div class="h">' + (x.own ? '<input type="text" class="nm" placeholder="Назва платежу" value="' + esc(x.name) + '" oninput="st.regular[' + i + '].name=this.value">' : '<span>' + x.e + ' ' + esc(x.name) + '</span>') +
+      '<button class="icon" onclick="delReg(' + i + ')">✕</button></div>' +
+      '<div class="r"><input class="money" inputmode="decimal" placeholder="' + (x.debt ? 'платіж на місяць' : 'сума на місяць') + '" value="' + esc(x.amount) + '" oninput="st.regular[' + i + '].amount=this.value">' +
+      '<select onchange="st.regular[' + i + '].day=this.value">' + dayOptions(x.day, false) + '</select></div>' +
+      (x.key === 'rent' ? '<label class="check"><input type="checkbox"' + (x.half ? ' checked' : '') + ' onchange="st.regular[' + i + '].half=this.checked"> Ділю навпіл (моя частка 50%) — впиши повну суму</label>' : '') +
+      (x.debt ? '<div class="hint">Піде в «Борги». Залишок боргу допишеш у «Налаштуваннях» — тоді покажу, коли закриєш.</div>' : '') +
+      (x.sub ? '<div class="hint">Загальна сума всіх підписок. Поштучно можна розписати потім у «Налаштуваннях».</div>' : '') +
+      '</div>').join('');
+  }
+  function togReg(key) {
+    const r = REG.filter(x => x.key === key)[0];
+    const i = st.regular.findIndex(x => x.key === key);
+    if (i >= 0) st.regular.splice(i, 1);
+    else st.regular.push({ key: r.key, e: r.e, name: r.name, amount: '', day: '', half: false, debt: !!r.debt, sub: !!r.sub });
+    renderReg();
+  }
+  function addOwnReg() { st.regular.push({ key: 'own' + Date.now(), e: '📌', name: '', own: true, amount: '', day: '', half: false, debt: false, sub: false }); renderReg(); }
+  function delReg(i) { st.regular.splice(i, 1); renderReg(); }
+  function next5() { st.regular = st.regular.filter(x => String(x.name).trim()); go(6); }
+
+  // 6. Щоденні
+  function findVar(n) { return st.variable.filter(x => x.name === n)[0]; }
+  function renderVar() {
+    $('varChips').innerHTML = VARS.map(v => '<span class="chip' + (findVar(v[1]) ? ' sel' : '') + '" onclick="togVar(&quot;' + v[1] + '&quot;)">' + v[0] + ' ' + v[1] + '</span>').join('') +
+      '<span class="chip add" onclick="addOwnVar()">+ Своя</span>';
+    $('varDet').innerHTML = st.variable.map((x, i) =>
+      '<div class="det"><div class="r">' + (x.own ? '<input type="text" class="nm" placeholder="Назва категорії" value="' + esc(x.name) + '" oninput="st.variable[' + i + '].name=this.value">' : '<b style="flex:1">' + esc(x.name) + '</b>') +
+      '<input class="money" inputmode="decimal" placeholder="бюджет / міс" value="' + esc(x.budget) + '" oninput="st.variable[' + i + '].budget=this.value">' +
+      '<button class="icon" onclick="delVar(' + i + ')">✕</button></div></div>').join('');
+  }
+  function togVar(n) {
+    const i = st.variable.findIndex(x => x.name === n);
+    const v = VARS.filter(x => x[1] === n)[0];
+    if (i >= 0) st.variable.splice(i, 1); else if (st.variable.length < 12) st.variable.push({ name: n, budget: '', need: !!v[2] });
+    renderVar();
+  }
+  function addOwnVar() { if (st.variable.length < 12) { st.variable.push({ name: '', budget: '', need: false, own: true }); renderVar(); } }
+  function delVar(i) { st.variable.splice(i, 1); renderVar(); }
+  function next6() { st.variable = st.variable.filter(x => String(x.name).trim()); go(7); }
+
+  // 7. Підсумок
   function summary() {
-    $('h4').textContent = 'Готово, ' + st.name + '!';
-    $('p4').textContent = G('Ти готова? ', 'Ти готовий? ') + 'Перевір — натисни на рядок, щоб змінити.';
-    $('vName').textContent = st.name;
-    $('vGen').textContent = st.gender === 'm' ? '👨 Чоловік' : '👩 Жінка';
-    $('vAge').textContent = st.age + ' ' + yw(st.age);
+    $('h7').textContent = 'Готово, ' + st.name + '!';
+    $('p7').textContent = G('Ти готова? ', 'Ти готовий? ') + 'Перевір — натисни на блок, щоб змінити.';
+    const inc = st.income.map(s => (s.main ? '★ ' : '') + esc(s.name) + (money(s.amount) ? ' — ' + fmt(money(s.amount)) : '') + (s.day ? ', ' + s.day + '-го' : ', нерегулярно')).join('<br>');
+    const reg = st.regular.length ? st.regular.map(x => esc(x.name) + (money(x.amount) ? ' — ' + fmt(money(x.amount)) + (x.half ? ' (моя частка 50%)' : '') : '') + (x.day ? ', ' + x.day + '-го' : '')).join('<br>') : 'не вказано — допишеш потім';
+    const vr = st.variable.length ? st.variable.map(x => esc(x.name) + (money(x.budget) ? ' — ' + fmt(money(x.budget)) : '')).join(', ') : 'не вказано';
+    const blk = (step, title, body) => '<div class="blk" onclick="go(' + step + ')"><div class="bh">' + title + '<em>змінити</em></div><div class="bb">' + body + '</div></div>';
+    $('sum').innerHTML =
+      blk(1, 'Про тебе', esc(st.name) + ' · ' + (st.gender === 'm' ? '👨 чоловік' : '👩 жінка') + ' · ' + st.age + ' ' + yw(st.age)) +
+      blk(4, 'Дохід' + (st.floating ? ' (сума плаває)' : ''), inc) +
+      blk(5, 'Обовʼязкові платежі', reg) +
+      blk(6, 'Щоденні витрати', vr);
+    $('replaceBox').style.display = D.hasData ? 'block' : 'none';
+  }
+
+  function payload() {
+    return {
+      name: st.name, gender: st.gender, age: st.age, floating: st.floating,
+      income: st.income.map(s => ({ name: s.name, amount: money(s.amount), day: s.day, main: s.main })),
+      regular: st.regular.map(x => ({ name: x.name, amount: money(x.amount), day: x.day, half: x.half, debt: x.debt, sub: x.sub })),
+      variable: st.variable.map(x => ({ name: x.name, budget: money(x.budget), need: x.need })),
+    };
   }
   function send(mode) {
-    go(5);
-    $('h5').textContent = mode === 'build' ? 'Будую твій трекер…' : 'Зберігаю профіль…';
-    $('p5').textContent = mode === 'build' ? 'Це до хвилини — можеш поки зробити чай ☕' : 'Секунду.';
+    const apply = D.hasData ? $('replace').checked : true;
+    go(8);
+    $('h8').textContent = mode === 'build' ? 'Будую твій трекер…' : 'Зберігаю…';
+    $('p8').textContent = mode === 'build' ? 'Це до хвилини — можеш поки зробити чай ☕' : 'Секунду.';
     google.script.run
       .withSuccessHandler(r => {
-        $('em6').textContent = '✅';
-        $('h6').textContent = r === 'built' ? 'Трекер готовий, ' + st.name + '!' : 'Профіль збережено!';
-        $('p6').textContent = r === 'built'
-          ? 'Почни з вкладки «Старт». Кольори й підказки вже налаштовані під тебе 💫'
-          : 'Щоб змінити кольори таблиці, вибери в меню «Побудувати трекер з нуля».';
+        $('em9').textContent = '✅';
+        $('h9').textContent = r === 'built' ? 'Трекер готовий, ' + st.name + '!' : 'Збережено!';
+        $('p9').textContent = 'Покажу, де що лежить і як цим користуватись — інструкція відкриється збоку, а таблиця залишиться під рукою.';
         $('closeLink').textContent = 'Закрити — розберусь ' + G('сама', 'сам');
-        go(6);
+        go(9);
       })
       .withFailureHandler(e => {
-        $('em6').textContent = '😕';
-        $('h6').textContent = 'Щось пішло не так';
-        $('p6').textContent = (e && e.message) || String(e);
-        go(6);
+        $('em9').textContent = '😕'; $('h9').textContent = 'Щось пішло не так'; $('p9').textContent = (e && e.message) || String(e); go(9);
       })
-      .quizSubmit({ name: st.name, gender: st.gender, age: st.age }, mode);
+      .quizSubmit(payload(), mode, apply);
   }
+  function openGuide() { google.script.run.withSuccessHandler(closeMe).withFailureHandler(closeMe).showGuide(); }
   function closeMe() { google.script.host.close(); }
-
-  // ── Екскурсія «Як користуватись»
-  let ti = 0;
-  function slides() {
-    const nm = st.name ? st.name : "";
-    return [
-      { e: "🧭", h: (nm ? nm + ", ось" : "Ось") + " як це працює", pts: [
-          "<b>Один раз</b> налаштуй: дохід, обовʼязкові платежі, бюджети на щодень.",
-          "<b>Щодня</b> вписуй суми — в «Операції» або з телефона.",
-          "<b>Дивись велику цифру</b> на «Дашборді» — скільки можна витратити до наступної виплати.",
-        ], tip: "Усе інше таблиця рахує сама. Формул писати не треба." },
-      { e: "⚙️", h: "Налаштування", sheet: "Налаштування", chips: true, pts: [
-          "<b>Дохід</b> — познач основне джерело і день виплати: від нього рахується цикл «до наступної виплати».",
-          "<b>Регулярні витрати</b> — оренда, комуналка, підписки. Ділиш оренду? Вкажи свою частку, напр. 50%.",
-          "<b>Змінні витрати</b> — місячні бюджети на їжу, транспорт, кафе.",
-          "<b>Борги</b> — платіж і залишок, <b>Цілі</b> — на що відкладаєш, <b>Рахунки</b> — картки й готівка.",
-        ], tip: "Почни з доходу й регулярних витрат — це 5 хвилин." },
-      { e: "🧾", h: "Операції", sheet: "Операції", pts: [
-          "Кожна покупка чи надходження — <b>один рядок</b>.",
-          G("Вписала", "Вписав") + " лише суму — <b>дата і «Витрата» поставляться самі</b>.",
-          "Обери <b>тип</b> — у «Категорії» залишаться тільки його категорії.",
-          "<b>Борг</b> — платіж по кредиту чи розстрочці, <b>Заощадження</b> — відкладені гроші.",
-          "Рахунок порожній — гроші з основного рахунку.",
-        ] },
-      { e: "📱", h: "З телефона — за 10 секунд", sheet: "Старт", pts: [
-          "Меню «Трекер» → <b>«Створити / оновити форму для телефону»</b>.",
-          "Посилання зʼявиться на вкладці «Старт» — відкрий його на телефоні й додай на головний екран.",
-          "Сума → тип → категорія → «Надіслати». Рядок сам зʼявиться в «Операціях».",
-        ], tip: "Найзручніше вносити прямо на касі — тоді нічого не забудеш." },
-      { e: "🎯", h: "Дашборд і велика цифра", sheet: "Дашборд", pts: [
-          "<b>Велика цифра</b> — скільки можна витратити до наступної виплати. Оренда, борги й заощадження вже віднято.",
-          "Під нею — <b>ліміт на день</b>. Зелена — ти в нормі, червона — витрачаєш швидше, ніж зазвичай.",
-          "<b>«Як рахується цифра»</b> — звідки вона взялася, рядок за рядком.",
-          "Нижче: дохід, платежі (✓ — оплачено), бюджети зі смужками, борги, цілі, 50/30/20 і <b>3 підказки</b>.",
-          "Вгорі <b>«Період»</b> — подивитися будь-який місяць.",
-        ] },
-      { e: "📊", h: "Огляди", pts: [
-          "<b>Рік</b> — категорії по місяцях, графік «дохід vs витрати» і теплова карта.",
-          "<b>Цілі</b> — скільки накопичено і скільки відкладати щомісяця до бажаної дати.",
-          "<b>Борги</b> — порядок закриття (сніжна куля) і коли будеш " + G("вільна", "вільний") + " від боргів.",
-          "<b>Підписки</b> — скільки коштують на рік і що можна скасувати.",
-          "<b>Календар</b> — витрати по днях: зелений — у межах, червоний — понад бюджет, «—» — день без витрат.",
-        ] },
-      { e: "💡", h: "Кілька порад", last: true, pts: [
-          "Вписуй витрати щодня — це хвилина.",
-          "Раз на тиждень зазирай на «Дашборд» і в «Календар».",
-          G("Пропустила", "Пропустив") + " кілька днів — просто допиши, нічого не зламається.",
-          "Щось не так? Меню «Трекер» → <b>«Перевірити таблицю»</b>.",
-          "Повернутися до цієї інструкції: меню «Трекер» → <b>«📖 Як користуватись»</b>.",
-        ] },
-    ];
-  }
-  function tour(i) {
-    const S = slides();
-    ti = Math.max(0, Math.min(S.length - 1, i));
-    const sl = S[ti];
-    let h = '<div class="emoji">' + sl.e + '</div><h1>' + sl.h + '</h1>';
-    if (sl.chips) h += '<div class="chips"><span class="chip" style="background:#FFF8D6">жовте — заповнюєш ти</span>' +
-      '<span class="chip" style="background:#F2F4F7">сіре — рахується само</span></div>';
-    h += '<ul class="pts">' + sl.pts.map(t => '<li>' + t + '</li>').join('') + '</ul>';
-    if (sl.tip) h += '<div class="tip">💡 ' + sl.tip + '</div>';
-    if (sl.sheet) h += '<button class="open" onclick="openSheet(&quot;' + sl.sheet + '&quot;)">Відкрити «' + sl.sheet + '» ↗</button>';
-    $('tbody').innerHTML = h;
-    $('tbody').scrollTop = 0;
-    $('dots').innerHTML = S.map((x, k) => '<i class="' + (k === ti ? 'on' : '') + '"></i>').join('');
-    $('tBack').style.visibility = ti === 0 ? 'hidden' : 'visible';
-    $('tNext').textContent = sl.last ? 'Почати 🚀' : 'Далі';
-    if (cur !== 'tour') { $(typeof cur === 'number' ? 's' + cur : cur).classList.remove('on'); cur = 'tour'; $('tour').classList.add('on'); }
-    $('top').style.visibility = 'hidden';
-  }
-  function tNext() {
-    const S = slides();
-    if (S[ti].last) { openSheet("Налаштування"); setTimeout(closeMe, 300); return; }
-    tour(ti + 1);
-  }
-  function openSheet(name) {
-    if (window.google && google.script && google.script.run && google.script.run.goToSheet) google.script.run.goToSheet(name);
-  }
 
   swatch('swf', D.themes.f); swatch('swm', D.themes.m);
   $('name').value = st.name;
@@ -2924,13 +3178,249 @@ const QUIZ_HTML = `<!DOCTYPE html>
   $('age').addEventListener('input', () => { const n = Number($('age').value); if (n >= 14 && n <= 100) { st.age = n; $('range').value = n; $('unit').textContent = yw(n); } });
   $('range').addEventListener('input', e => setAge(e.target.value));
   document.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || e.target.tagName === 'SELECT') return;
     if (cur === 0) go(1); else if (cur === 1) next1(); else if (cur === 2) next2(); else if (cur === 3) next3();
   });
-  paint();
-  $('closeLink').textContent = 'Закрити — розберусь ' + G('сама', 'сам');
-  if (D.startAt === 'tour') tour(0); else go(0);
+  paint(); go(0);
 </script></body></html>`;
+
+const GUIDE_HTML = String.raw`<!DOCTYPE html>
+<html lang="uk"><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --p:#4F86B5; --a:#8CC4E8; --bg:#E5F1FA; --t:#2C5677; --ink:#2E3A46; --muted:#8A9BAA; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; font-family:Montserrat, Arial, sans-serif; color:var(--ink); background:#fff; }
+  .wrap { display:flex; flex-direction:column; height:100%; padding:12px 14px; }
+  .top { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .bar { flex:1; height:5px; background:var(--bg); border-radius:99px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:linear-gradient(90deg,var(--p),var(--a)); transition:width .4s; }
+  .cnt { font-size:12px; font-weight:700; color:var(--muted); }
+  .body { flex:1; overflow:auto; padding:2px 2px 8px; }
+  .emoji { font-size:34px; margin:6px 0 6px; }
+  h1 { font-size:19px; font-weight:800; color:var(--t); margin:0 0 8px; line-height:1.25; }
+  p { font-size:13.5px; line-height:1.5; margin:0 0 8px; }
+  ul { list-style:none; padding:0; margin:0 0 8px; }
+  li { position:relative; padding:6px 0 6px 18px; font-size:13.5px; line-height:1.45; }
+  li:before { content:""; position:absolute; left:2px; top:13px; width:8px; height:8px; border-radius:50%; background:var(--a); }
+  .ex { background:#F7F9FB; border:1px dashed #D5DEE7; border-radius:12px; padding:9px 11px; font-size:12.5px; line-height:1.5; margin:4px 0 10px; }
+  .ex b { color:var(--t); }
+  .tip { background:var(--bg); border-radius:12px; padding:9px 11px; font-size:12.5px; font-weight:600; color:var(--t); margin:4px 0 10px; }
+  .here { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--p); font-weight:700; margin:0 0 8px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 8px; }
+  .chip { font-size:11.5px; font-weight:700; border-radius:9px; padding:5px 8px; }
+  table.cols { width:100%; border-collapse:collapse; font-size:12.5px; margin:0 0 10px; }
+  table.cols td { border-bottom:1px solid #EEF1F4; padding:6px 4px; vertical-align:top; line-height:1.4; }
+  table.cols td:first-child { font-weight:700; color:var(--t); white-space:nowrap; padding-right:8px; }
+  .btn { border:none; border-radius:12px; padding:12px; font:700 14px Montserrat, Arial; cursor:pointer; }
+  .btn.main { background:var(--p); color:#fff; }
+  .btn.soft { background:var(--bg); color:var(--t); width:100%; margin:4px 0 8px; }
+  .btn.ghost { background:none; color:var(--muted); padding:12px 4px; }
+  .foot { display:flex; gap:8px; align-items:center; padding-top:8px; border-top:1px solid #EEF1F4; }
+  .foot .main { flex:1; }
+  .tabs { display:flex; background:#F1F4F7; border-radius:12px; padding:3px; margin:6px 0 10px; }
+  .tabs button { flex:1; border:none; background:none; border-radius:10px; padding:8px; font:700 13px Montserrat, Arial; color:var(--muted); cursor:pointer; }
+  .tabs button.on { background:#fff; color:var(--t); box-shadow:0 1px 4px rgba(0,0,0,.08); }
+  .step { display:flex; gap:10px; align-items:flex-start; margin:0 0 10px; }
+  .step .n { flex:0 0 24px; height:24px; border-radius:50%; background:var(--p); color:#fff; font-weight:800; font-size:12px; display:flex; align-items:center; justify-content:center; }
+  .step .tx { font-size:13px; line-height:1.45; }
+  .step svg { vertical-align:middle; }
+  .phone { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px; background:#F1F4F7; margin:2px 4px 0 0; vertical-align:middle; }
+  .qr { text-align:center; margin:6px 0 4px; }
+  .qr svg { width:150px; height:150px; }
+  .url { font-size:11px; color:var(--muted); word-break:break-all; text-align:center; margin-bottom:8px; }
+  .tabgrid { display:grid; grid-template-columns:1fr; gap:6px; margin-bottom:8px; }
+  .tabgrid button { text-align:left; border:2px solid #EEF1F4; background:#fff; border-radius:12px; padding:8px 10px; cursor:pointer; font:600 12.5px Montserrat, Arial; color:var(--ink); line-height:1.4; }
+  .tabgrid button b { color:var(--t); display:block; font-size:13.5px; }
+  .msg { font-size:12px; color:#D9534F; min-height:14px; }
+</style></head>
+<body><div class="wrap">
+  <div class="top"><div class="cnt" id="cnt"></div><div class="bar"><i id="bar"></i></div></div>
+  <div class="body" id="body"></div>
+  <div class="msg" id="msg"></div>
+  <div class="foot"><button class="btn ghost" id="back" onclick="show(i - 1)">← Назад</button><button class="btn main" id="next" onclick="nextStep()">Далі →</button></div>
+</div>
+<script>
+__QRLIB__
+</script>
+<script>
+  const D = __DATA__;
+  const G = (f, m) => D.gender === 'm' ? m : f;
+  const NAME = D.name ? D.name : '';
+  let i = 0;
+  let os = 'ios';
+  let formUrl = D.formUrl || '';
+
+  const ico = {
+    share: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C7CF4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8"/></svg>',
+    plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#333" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>',
+    dots: '<svg width="18" height="18" viewBox="0 0 24 24" fill="#333"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>',
+    safari: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1C7CF4" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z" fill="#1C7CF4"/></svg>',
+    chrome: '<svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#DB4437"/><path d="M12 12L3.3 7A10 10 0 0 1 12 2h0z" fill="#DB4437"/><path d="M12 12l-8.7-5A10 10 0 0 0 7 20.7z" fill="#0F9D58"/><path d="M12 12l5 8.7A10 10 0 0 0 20.7 7H12z" fill="#F4B400"/><circle cx="12" cy="12" r="4.2" fill="#fff"/><circle cx="12" cy="12" r="3.2" fill="#4285F4"/></svg>',
+    home: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#333" stroke-width="2" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
+    check: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2E7D32" stroke-width="2.5" stroke-linecap="round"><path d="M5 12l5 5 9-10"/></svg>',
+  };
+  const ph = k => '<span class="phone">' + ico[k] + '</span>';
+
+  function qrSvg(url) {
+    try { const q = qrcode(0, 'M'); q.addData(url); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
+    catch (e) { return ''; }
+  }
+
+  const steps = [
+    { focus: null, render: () =>
+      '<div class="emoji">🧭</div><h1>' + (NAME ? NAME + ', ось' : 'Ось') + ' як це працює</h1>' +
+      '<p>Ця панель — твій провідник. Таблиця поруч лишається доступною: я відкриватиму потрібну вкладку й підсвічуватиму блок, про який іде мова.</p>' +
+      '<ul><li><b>Один раз</b> налаштуй дохід, обовʼязкові платежі й бюджети.</li><li><b>Щодня</b> вписуй суми — в «Операції» або з телефона.</li>' +
+      '<li><b>Дивись велику цифру</b> на «Дашборді» — скільки можна витратити до наступної виплати.</li></ul>' +
+      '<div class="tip">💡 Формул писати не треба — усе рахується саме.</div>' },
+
+    { focus: 'income', render: () =>
+      '<div class="emoji">⚙️</div><h1>Налаштування: дохід</h1>' +
+      '<div class="here">👉 Відкрито вкладку «Налаштування», блок «Дохід» підсвічено</div>' +
+      '<div class="chips"><span class="chip" style="background:#FFF8D6">жовте — заповнюєш ти</span><span class="chip" style="background:#F2F4F7">сіре — рахується само</span></div>' +
+      '<table class="cols"><tr><td>Джерело</td><td>звідки гроші: Зарплата, Аванс, Фріланс…</td></tr>' +
+      '<tr><td>Основне ☑</td><td>галочка на головній виплаті. Від її дня трекер рахує «до наступної виплати».</td></tr>' +
+      '<tr><td>Очікувана сума</td><td>скільки зазвичай приходить. Можна лишити порожнім, якщо плаває.</td></tr>' +
+      '<tr><td>День виплати</td><td>число місяця, напр. 1 або 15.</td></tr></table>' +
+      '<div class="tip">💡 Якщо ти ' + G('пройшла', 'пройшов') + ' квіз — тут уже твої відповіді. Перевір і поправ, якщо треба.</div>' },
+
+    { focus: 'regular', render: () =>
+      '<div class="emoji">🏠</div><h1>Обовʼязкові платежі</h1>' +
+      '<div class="here">👉 Блок «Регулярні витрати» підсвічено</div>' +
+      '<p>Платежі, що повторюються щомісяця чи раз на квартал / рік: оренда, комуналка, інтернет, підписки.</p>' +
+      '<table class="cols"><tr><td>Загальна сума</td><td>увесь рахунок, напр. оренда 30 000.</td></tr>' +
+      '<tr><td>Моя частка</td><td>яку частину платиш ти. Ділиш навпіл → 50%, і «Моя сума» стане 15 000.</td></tr>' +
+      '<tr><td>Як часто</td><td>щомісяця / раз на квартал / раз на рік.</td></tr>' +
+      '<tr><td>День оплати</td><td>число місяця — щоб трекер знав, чи платіж уже мав бути.</td></tr>' +
+      '<tr><td>Підписка ☑</td><td>познач Netflix, Spotify тощо — вони потраплять на вкладку «Підписки».</td></tr></table>' },
+
+    { focus: 'variable', render: () =>
+      '<div class="emoji">🛒</div><h1>Щоденні витрати</h1>' +
+      '<div class="here">👉 Блок «Змінні витрати» підсвічено</div>' +
+      '<p>Те, на що гроші йдуть щодня: їжа, транспорт, кафе, краса. Для кожної категорії можна поставити <b>місячний бюджет</b> — ліміт, скільки хочеш на неї витрачати.</p>' +
+      '<div class="ex">Бюджет на «Їжа» — <b>7 000 грн</b>. Витратила 5 600 → на «Дашборді» смужка 80% стане жовтою, понад 7 000 — червоною.</div>' },
+
+    { focus: 'debts', render: () =>
+      '<div class="emoji">💳</div><h1>Борги, цілі, рахунки</h1>' +
+      '<div class="here">👉 Блок «Борги і розстрочки» підсвічено</div>' +
+      '<table class="cols"><tr><td>Сума платежу</td><td>скільки платиш за раз, напр. <b>1 590 грн</b> щомісяця за телефон частинами.</td></tr>' +
+      '<tr><td>Початковий залишок</td><td>скільки всього ще ' + G('винна', 'винен') + ' на старті, напр. <b>9 540 грн</b>. Трекер сам віднімає кожен платіж.</td></tr>' +
+      '<tr><td>Закрито достроково ☑</td><td>якщо ' + G('погасила', 'погасив') + ' раніше — постав галочку.</td></tr></table>' +
+      '<p>Нижче ще два блоки: <b>«Заощадження і цілі»</b> — на що відкладаєш (подушка, відпустка), і <b>«Рахунки»</b> — картки й готівка, щоб бачити баланс кожної.</p>' },
+
+    { focus: 'ops', render: () =>
+      '<div class="emoji">🧾</div><h1>Операції — щоденний запис</h1>' +
+      '<div class="here">👉 Відкрито «Операції», виділено перший вільний рядок</div>' +
+      '<p>Кожна покупка чи надходження — один рядок. Колонки:</p>' +
+      '<table class="cols"><tr><td>Дата</td><td>коли. Порожня → поставиться сьогодні.</td></tr>' +
+      '<tr><td>Тип</td><td>що сталося з грошима:<br><b>Дохід</b> — гроші прийшли<br><b>Витрата</b> — ' + G('купила', 'купив') + ' чи ' + G('оплатила', 'оплатив') + '<br><b>Борг</b> — платіж по кредиту чи розстрочці<br><b>Заощадження</b> — ' + G('відклала', 'відклав') + '</td></tr>' +
+      '<tr><td>Сума</td><td>скільки гривень.</td></tr>' +
+      '<tr><td>Категорія</td><td>на що саме. Список залежить від типу: для «Витрата» — Їжа, Оренда, Кафе…; для «Дохід» — Зарплата, Аванс.</td></tr>' +
+      '<tr><td>Рахунок</td><td>картка чи готівка. Порожньо — основний рахунок.</td></tr></table>' +
+      '<div class="ex"><b>Приклад:</b> ' + G('купила', 'купив') + ' продукти на 250 грн.<br>1. Впиши <b>250</b> у колонку «Сума».<br>2. Дата і тип «Витрата» поставляться самі.<br>3. У «Категорія» обери <b>Їжа</b>. Готово ✓</div>' },
+
+    { focus: 'form', render: renderForm },
+
+    { focus: 'dash', render: () =>
+      '<div class="emoji">🎯</div><h1>Дашборд і велика цифра</h1>' +
+      '<div class="here">👉 Відкрито «Дашборд», велику цифру підсвічено</div>' +
+      '<p><b>Велика цифра</b> — скільки ти ще можеш витратити до наступної виплати. Вона рахується так:</p>' +
+      '<div class="ex">Дохід за цикл <b>42 900</b><br>− уже витрачено <b>33 500</b> (усе, що ' + G('купила', 'купив') + ' й ' + G('оплатила', 'оплатив') + ': продукти, оренда, кава…)<br>− ще не оплачені обовʼязкові платежі<br>− платежі по боргах цього місяця<br>− заплановані заощадження<br>= <b>9 400 грн</b> на щоденні витрати до виплати</div>' +
+      '<ul><li>Під цифрою — <b>ліміт на день</b>: 9 400 ÷ днів до виплати.</li>' +
+      '<li><b>Зелена</b> — ти в нормі. <b>Червона</b> — витрачаєш швидше, ніж зазвичай.</li>' +
+      '<li>Блок <b>«Як рахується цифра»</b> показує ці рядки з твоїми сумами.</li>' +
+      '<li>Вгорі <b>«Період»</b> — подивитися будь-який місяць.</li></ul>' },
+
+    { focus: null, render: () =>
+      '<div class="emoji">🗂️</div><h1>Інші вкладки</h1><p>Натисни — відкрию вкладку:</p><div class="tabgrid">' +
+      [['Рік', 'усі категорії по місяцях, графік «дохід vs витрати», теплова карта витрат'],
+       ['Цілі', 'скільки накопичено на кожну ціль і скільки відкладати щомісяця'],
+       ['Борги', 'у якому порядку закривати (сніжна куля) і коли будеш ' + G('вільна', 'вільний') + ' від боргів'],
+       ['Підписки', 'скільки коштують на рік і що можна скасувати'],
+       ['Календар', 'витрати по днях: зелений — у межах, червоний — понад бюджет, «—» — день без витрат'],
+       ['Старт', 'посилання на форму, перевірка таблиці, твій профіль']]
+        .map(t => '<button onclick="focusOn(&quot;' + t[0] + '&quot;)"><b>' + t[0] + ' ↗</b>' + t[1] + '</button>').join('') + '</div>' },
+
+    { focus: null, last: true, render: () =>
+      '<div class="emoji">💡</div><h1>Кілька порад</h1><ul>' +
+      '<li>Вписуй витрати щодня — це хвилина.</li><li>Раз на тиждень зазирай на «Дашборд» і в «Календар».</li>' +
+      '<li>' + G('Пропустила', 'Пропустив') + ' кілька днів — просто допиши, нічого не зламається.</li>' +
+      '<li>Щось не так? Меню «Трекер» → <b>«Перевірити таблицю»</b>.</li>' +
+      '<li>Повернутися до цієї інструкції: меню «Трекер» → <b>«📖 Як користуватись»</b>.</li></ul>' +
+      '<div class="tip">🚀 Почни з «Налаштувань» — перевір дохід і платежі.</div>' },
+  ];
+
+  function renderForm() {
+    let h = '<div class="emoji">📱</div><h1>З телефона — за 10 секунд</h1>';
+    if (!formUrl) {
+      h += '<p>Створю для тебе Google Форму «Нова операція». Ти відкриватимеш її на телефоні, а кожна відповідь сама зʼявлятиметься в «Операціях».</p>' +
+        '<button class="btn soft" id="mk" onclick="makeForm()">✨ Створити форму</button>';
+    } else {
+      h += '<p><b>1.</b> Наведи камеру телефона на QR-код (або відкрий посилання з вкладки «Старт»):</p>' +
+        '<div class="qr">' + qrSvg(formUrl) + '</div><div class="url">' + formUrl + '</div>';
+    }
+    h += '<p><b>2.</b> Додай форму на головний екран — тоді вона відкриватиметься як застосунок:</p>' +
+      '<div class="tabs"><button id="tIos" class="' + (os === 'ios' ? 'on' : '') + '" onclick="setOs(&quot;ios&quot;)">📱 iPhone</button>' +
+      '<button id="tAnd" class="' + (os === 'android' ? 'on' : '') + '" onclick="setOs(&quot;android&quot;)">🤖 Android</button></div>';
+    const st = (n, t) => '<div class="step"><div class="n">' + n + '</div><div class="tx">' + t + '</div></div>';
+    if (os === 'ios') {
+      h += st(1, ph('safari') + 'Відкрий посилання в <b>Safari</b> (саме в Safari, не в іншому браузері).') +
+        st(2, ph('share') + 'Натисни кнопку <b>«Поділитися»</b> — квадрат зі стрілкою вгору, внизу екрана.') +
+        st(3, ph('plus') + 'Прогорни список вниз і вибери <b>«На початковий екран»</b>.') +
+        st(4, ph('check') + 'Натисни <b>«Додати»</b> вгорі справа. На екрані зʼявиться іконка форми.');
+    } else {
+      h += st(1, ph('chrome') + 'Відкрий посилання в <b>Chrome</b>.') +
+        st(2, ph('dots') + 'Натисни меню <b>⋮</b> у правому верхньому куті.') +
+        st(3, ph('home') + 'Вибери <b>«Додати на головний екран»</b> (іноді — «Встановити застосунок»).') +
+        st(4, ph('check') + 'Підтвердь <b>«Додати»</b>. Іконка зʼявиться на головному екрані.');
+    }
+    h += '<p><b>3.</b> Вносиш так: <b>сума → тип → категорія → «Надіслати»</b>. Рядок сам зʼявиться в «Операціях».</p>' +
+      '<div class="tip">💡 Найзручніше вносити прямо на касі — тоді нічого не забудеш.</div>';
+    return h;
+  }
+  function setOs(o) { os = o; show(i, true); }
+  function makeForm() {
+    const b = document.getElementById('mk'); b.textContent = 'Створюю… це ~20 секунд'; b.disabled = true;
+    google.script.run.withSuccessHandler(url => { formUrl = url || ''; show(i, true); })
+      .withFailureHandler(e => { b.disabled = false; b.textContent = '✨ Створити форму'; msg((e && e.message) || String(e)); })
+      .createEntryForm();
+  }
+
+  function msg(t) { document.getElementById('msg').textContent = t || ''; }
+  function focusOn(key) {
+    msg('');
+    if (!(window.google && google.script && google.script.run)) return;
+    google.script.run.withSuccessHandler(r => { if (r !== 'ok') msg(r); }).withFailureHandler(e => msg((e && e.message) || String(e))).tourFocus(key);
+  }
+  function show(n, keep) {
+    i = Math.max(0, Math.min(steps.length - 1, n));
+    const s = steps[i];
+    document.getElementById('body').innerHTML = s.render();
+    document.getElementById('body').scrollTop = 0;
+    document.getElementById('cnt').textContent = (i + 1) + ' / ' + steps.length;
+    document.getElementById('bar').style.width = ((i + 1) / steps.length * 100) + '%';
+    document.getElementById('back').style.visibility = i === 0 ? 'hidden' : 'visible';
+    document.getElementById('next').textContent = s.last ? 'Почати з налаштувань 🚀' : 'Далі →';
+    if (!keep) { msg(''); if (s.focus) focusOn(s.focus); }
+  }
+  function nextStep() {
+    if (steps[i].last) { focusOn('income'); return; }
+    show(i + 1);
+  }
+  (function theme() {
+    const t = D.theme, r = document.documentElement.style;
+    r.setProperty('--p', t.primary); r.setProperty('--a', t.accent); r.setProperty('--bg', t.headerBg); r.setProperty('--t', t.headerTxt);
+  })();
+  show(0);
+</script></body></html>`;
+
+/* QR Code Generator for JavaScript — Copyright (c) 2009 Kazuhiko Arase, MIT license.
+   https://github.com/kazuhikoarase/qrcode-generator */
+const QR_LIB = String.raw`// Copyright (c) 2009 Kazuhiko Arase
+// Licensed under the MIT license:
+// DENSO WAVE INCORPORATED
+var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],f={},c=function(t,r){o=function(t){for(var r=new Array(t),e=0;e<t;e+=1){r[e]=new Array(t);for(var n=0;n<t;n+=1)r[e][n]=null}return r}(i=4*e+17),l(0,0),l(i-7,0),l(0,i-7),s(),h(),d(t,r),e>=7&&v(t),null==a&&(a=p(e,n,u)),w(a,r)},l=function(t,r){for(var e=-1;e<=7;e+=1)if(!(t+e<=-1||i<=t+e))for(var n=-1;n<=7;n+=1)r+n<=-1||i<=r+n||(o[t+e][r+n]=0<=e&&e<=6&&(0==n||6==n)||0<=n&&n<=6&&(0==e||6==e)||2<=e&&e<=4&&2<=n&&n<=4)},h=function(){for(var t=8;t<i-8;t+=1)null==o[t][6]&&(o[t][6]=t%2==0);for(var r=8;r<i-8;r+=1)null==o[6][r]&&(o[6][r]=r%2==0)},s=function(){for(var t=B.getPatternPosition(e),r=0;r<t.length;r+=1)for(var n=0;n<t.length;n+=1){var i=t[r],a=t[n];if(null==o[i][a])for(var u=-2;u<=2;u+=1)for(var f=-2;f<=2;f+=1)o[i+u][a+f]=-2==u||2==u||-2==f||2==f||0==u&&0==f}},v=function(t){for(var r=B.getBCHTypeNumber(e),n=0;n<18;n+=1){var a=!t&&1==(r>>n&1);o[Math.floor(n/3)][n%3+i-8-3]=a}for(n=0;n<18;n+=1){a=!t&&1==(r>>n&1);o[n%3+i-8-3][Math.floor(n/3)]=a}},d=function(t,r){for(var e=n<<3|r,a=B.getBCHTypeInfo(e),u=0;u<15;u+=1){var f=!t&&1==(a>>u&1);u<6?o[u][8]=f:u<8?o[u+1][8]=f:o[i-15+u][8]=f}for(u=0;u<15;u+=1){f=!t&&1==(a>>u&1);u<8?o[8][i-u-1]=f:u<9?o[8][15-u-1+1]=f:o[8][15-u-1]=f}o[i-8][8]=!t},w=function(t,r){for(var e=-1,n=i-1,a=7,u=0,f=B.getMaskFunction(r),c=i-1;c>0;c-=2)for(6==c&&(c-=1);;){for(var g=0;g<2;g+=1)if(null==o[n][c-g]){var l=!1;u<t.length&&(l=1==(t[u]>>>a&1)),f(n,c-g)&&(l=!l),o[n][c-g]=l,-1==(a-=1)&&(u+=1,a=7)}if((n+=e)<0||i<=n){n-=e,e=-e;break}}},p=function(t,r,e){for(var n=A.getRSBlocks(t,r),o=b(),i=0;i<e.length;i+=1){var a=e[i];o.put(a.getMode(),4),o.put(a.getLength(),B.getLengthInBits(a.getMode(),t)),a.write(o)}var u=0;for(i=0;i<n.length;i+=1)u+=n[i].dataCount;if(o.getLengthInBits()>8*u)throw"code length overflow. ("+o.getLengthInBits()+">"+8*u+")";for(o.getLengthInBits()+4<=8*u&&o.put(0,4);o.getLengthInBits()%8!=0;)o.putBit(!1);for(;!(o.getLengthInBits()>=8*u||(o.put(236,8),o.getLengthInBits()>=8*u));)o.put(17,8);return function(t,r){for(var e=0,n=0,o=0,i=new Array(r.length),a=new Array(r.length),u=0;u<r.length;u+=1){var f=r[u].dataCount,c=r[u].totalCount-f;n=Math.max(n,f),o=Math.max(o,c),i[u]=new Array(f);for(var g=0;g<i[u].length;g+=1)i[u][g]=255&t.getBuffer()[g+e];e+=f;var l=B.getErrorCorrectPolynomial(c),h=k(i[u],l.getLength()-1).mod(l);for(a[u]=new Array(l.getLength()-1),g=0;g<a[u].length;g+=1){var s=g+h.getLength()-a[u].length;a[u][g]=s>=0?h.getAt(s):0}}var v=0;for(g=0;g<r.length;g+=1)v+=r[g].totalCount;var d=new Array(v),w=0;for(g=0;g<n;g+=1)for(u=0;u<r.length;u+=1)g<i[u].length&&(d[w]=i[u][g],w+=1);for(g=0;g<o;g+=1)for(u=0;u<r.length;u+=1)g<a[u].length&&(d[w]=a[u][g],w+=1);return d}(o,n)};f.addData=function(t,r){var e=null;switch(r=r||"Byte"){case"Numeric":e=M(t);break;case"Alphanumeric":e=x(t);break;case"Byte":e=m(t);break;case"Kanji":e=L(t);break;default:throw"mode:"+r}u.push(e),a=null},f.isDark=function(t,r){if(t<0||i<=t||r<0||i<=r)throw t+","+r;return o[t][r]},f.getModuleCount=function(){return i},f.make=function(){if(e<1){for(var t=1;t<40;t++){for(var r=A.getRSBlocks(t,n),o=b(),i=0;i<u.length;i++){var a=u[i];o.put(a.getMode(),4),o.put(a.getLength(),B.getLengthInBits(a.getMode(),t)),a.write(o)}var g=0;for(i=0;i<r.length;i++)g+=r[i].dataCount;if(o.getLengthInBits()<=8*g)break}e=t}c(!1,function(){for(var t=0,r=0,e=0;e<8;e+=1){c(!0,e);var n=B.getLostPoint(f);(0==e||t>n)&&(t=n,r=e)}return r}())},f.createTableTag=function(t,r){t=t||2;var e="";e+='<table style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: "+(r=void 0===r?4*t:r)+"px;",e+='">',e+="<tbody>";for(var n=0;n<f.getModuleCount();n+=1){e+="<tr>";for(var o=0;o<f.getModuleCount();o+=1)e+='<td style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: 0px;",e+=" width: "+t+"px;",e+=" height: "+t+"px;",e+=" background-color: ",e+=f.isDark(n,o)?"#000000":"#ffffff",e+=";",e+='"/>';e+="</tr>"}return e+="</tbody>",e+="</table>"},f.createSvgTag=function(t,r,e,n){var o={};"object"==typeof arguments[0]&&(t=(o=arguments[0]).cellSize,r=o.margin,e=o.alt,n=o.title),t=t||2,r=void 0===r?4*t:r,(e="string"==typeof e?{text:e}:e||{}).text=e.text||null,e.id=e.text?e.id||"qrcode-description":null,(n="string"==typeof n?{text:n}:n||{}).text=n.text||null,n.id=n.text?n.id||"qrcode-title":null;var i,a,u,c,g=f.getModuleCount()*t+2*r,l="";for(c="l"+t+",0 0,"+t+" -"+t+",0 0,-"+t+"z ",l+='<svg version="1.1" xmlns="http://www.w3.org/2000/svg"',l+=o.scalable?"":' width="'+g+'px" height="'+g+'px"',l+=' viewBox="0 0 '+g+" "+g+'" ',l+=' preserveAspectRatio="xMinYMin meet"',l+=n.text||e.text?' role="img" aria-labelledby="'+y([n.id,e.id].join(" ").trim())+'"':"",l+=">",l+=n.text?'<title id="'+y(n.id)+'">'+y(n.text)+"</title>":"",l+=e.text?'<description id="'+y(e.id)+'">'+y(e.text)+"</description>":"",l+='<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>',l+='<path d="',a=0;a<f.getModuleCount();a+=1)for(u=a*t+r,i=0;i<f.getModuleCount();i+=1)f.isDark(a,i)&&(l+="M"+(i*t+r)+","+u+c);return l+='" stroke="transparent" fill="black"/>',l+="</svg>"},f.createDataURL=function(t,r){t=t||2,r=void 0===r?4*t:r;var e=f.getModuleCount()*t+2*r,n=r,o=e-r;return I(e,e,function(r,e){if(n<=r&&r<o&&n<=e&&e<o){var i=Math.floor((r-n)/t),a=Math.floor((e-n)/t);return f.isDark(a,i)?0:1}return 1})},f.createImgTag=function(t,r,e){t=t||2,r=void 0===r?4*t:r;var n=f.getModuleCount()*t+2*r,o="";return o+="<img",o+=' src="',o+=f.createDataURL(t,r),o+='"',o+=' width="',o+=n,o+='"',o+=' height="',o+=n,o+='"',e&&(o+=' alt="',o+=y(e),o+='"'),o+="/>"};var y=function(t){for(var r="",e=0;e<t.length;e+=1){var n=t.charAt(e);switch(n){case"<":r+="&lt;";break;case">":r+="&gt;";break;case"&":r+="&amp;";break;case'"':r+="&quot;";break;default:r+=n}}return r};return f.createASCII=function(t,r){if((t=t||1)<2)return function(t){t=void 0===t?2:t;var r,e,n,o,i,a=1*f.getModuleCount()+2*t,u=t,c=a-t,g={"██":"█","█ ":"▀"," █":"▄","  ":" "},l={"██":"▀","█ ":"▀"," █":" ","  ":" "},h="";for(r=0;r<a;r+=2){for(n=Math.floor((r-u)/1),o=Math.floor((r+1-u)/1),e=0;e<a;e+=1)i="█",u<=e&&e<c&&u<=r&&r<c&&f.isDark(n,Math.floor((e-u)/1))&&(i=" "),u<=e&&e<c&&u<=r+1&&r+1<c&&f.isDark(o,Math.floor((e-u)/1))?i+=" ":i+="█",h+=t<1&&r+1>=c?l[i]:g[i];h+="\n"}return a%2&&t>0?h.substring(0,h.length-a-1)+Array(a+1).join("▀"):h.substring(0,h.length-1)}(r);t-=1,r=void 0===r?2*t:r;var e,n,o,i,a=f.getModuleCount()*t+2*r,u=r,c=a-r,g=Array(t+1).join("██"),l=Array(t+1).join("  "),h="",s="";for(e=0;e<a;e+=1){for(o=Math.floor((e-u)/t),s="",n=0;n<a;n+=1)i=1,u<=n&&n<c&&u<=e&&e<c&&f.isDark(o,Math.floor((n-u)/t))&&(i=0),s+=i?g:l;for(o=0;o<t;o+=1)h+=s+"\n"}return h.substring(0,h.length-1)},f.renderTo2dContext=function(t,r){r=r||2;for(var e=f.getModuleCount(),n=0;n<e;n++)for(var o=0;o<e;o++)t.fillStyle=f.isDark(n,o)?"black":"white",t.fillRect(n*r,o*r,r,r)},f};t.stringToBytes=(t.stringToBytesFuncs={default:function(t){for(var r=[],e=0;e<t.length;e+=1){var n=t.charCodeAt(e);r.push(255&n)}return r}}).default,t.createStringToBytes=function(t,r){var e=function(){for(var e=S(t),n=function(){var t=e.read();if(-1==t)throw"eof";return t},o=0,i={};;){var a=e.read();if(-1==a)break;var u=n(),f=n()<<8|n();i[String.fromCharCode(a<<8|u)]=f,o+=1}if(o!=r)throw o+" != "+r;return i}(),n="?".charCodeAt(0);return function(t){for(var r=[],o=0;o<t.length;o+=1){var i=t.charCodeAt(o);if(i<128)r.push(i);else{var a=e[t.charAt(o)];"number"==typeof a?(255&a)==a?r.push(a):(r.push(a>>>8),r.push(255&a)):r.push(n)}}return r}};var r,e,n,o,i,a=1,u=2,f=4,c=8,g={L:1,M:0,Q:3,H:2},l=0,h=1,s=2,v=3,d=4,w=5,p=6,y=7,B=(r=[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],e=1335,n=7973,i=function(t){for(var r=0;0!=t;)r+=1,t>>>=1;return r},(o={}).getBCHTypeInfo=function(t){for(var r=t<<10;i(r)-i(e)>=0;)r^=e<<i(r)-i(e);return 21522^(t<<10|r)},o.getBCHTypeNumber=function(t){for(var r=t<<12;i(r)-i(n)>=0;)r^=n<<i(r)-i(n);return t<<12|r},o.getPatternPosition=function(t){return r[t-1]},o.getMaskFunction=function(t){switch(t){case l:return function(t,r){return(t+r)%2==0};case h:return function(t,r){return t%2==0};case s:return function(t,r){return r%3==0};case v:return function(t,r){return(t+r)%3==0};case d:return function(t,r){return(Math.floor(t/2)+Math.floor(r/3))%2==0};case w:return function(t,r){return t*r%2+t*r%3==0};case p:return function(t,r){return(t*r%2+t*r%3)%2==0};case y:return function(t,r){return(t*r%3+(t+r)%2)%2==0};default:throw"bad maskPattern:"+t}},o.getErrorCorrectPolynomial=function(t){for(var r=k([1],0),e=0;e<t;e+=1)r=r.multiply(k([1,C.gexp(e)],0));return r},o.getLengthInBits=function(t,r){if(1<=r&&r<10)switch(t){case a:return 10;case u:return 9;case f:case c:return 8;default:throw"mode:"+t}else if(r<27)switch(t){case a:return 12;case u:return 11;case f:return 16;case c:return 10;default:throw"mode:"+t}else{if(!(r<41))throw"type:"+r;switch(t){case a:return 14;case u:return 13;case f:return 16;case c:return 12;default:throw"mode:"+t}}},o.getLostPoint=function(t){for(var r=t.getModuleCount(),e=0,n=0;n<r;n+=1)for(var o=0;o<r;o+=1){for(var i=0,a=t.isDark(n,o),u=-1;u<=1;u+=1)if(!(n+u<0||r<=n+u))for(var f=-1;f<=1;f+=1)o+f<0||r<=o+f||0==u&&0==f||a==t.isDark(n+u,o+f)&&(i+=1);i>5&&(e+=3+i-5)}for(n=0;n<r-1;n+=1)for(o=0;o<r-1;o+=1){var c=0;t.isDark(n,o)&&(c+=1),t.isDark(n+1,o)&&(c+=1),t.isDark(n,o+1)&&(c+=1),t.isDark(n+1,o+1)&&(c+=1),0!=c&&4!=c||(e+=3)}for(n=0;n<r;n+=1)for(o=0;o<r-6;o+=1)t.isDark(n,o)&&!t.isDark(n,o+1)&&t.isDark(n,o+2)&&t.isDark(n,o+3)&&t.isDark(n,o+4)&&!t.isDark(n,o+5)&&t.isDark(n,o+6)&&(e+=40);for(o=0;o<r;o+=1)for(n=0;n<r-6;n+=1)t.isDark(n,o)&&!t.isDark(n+1,o)&&t.isDark(n+2,o)&&t.isDark(n+3,o)&&t.isDark(n+4,o)&&!t.isDark(n+5,o)&&t.isDark(n+6,o)&&(e+=40);var g=0;for(o=0;o<r;o+=1)for(n=0;n<r;n+=1)t.isDark(n,o)&&(g+=1);return e+=Math.abs(100*g/r/r-50)/5*10},o),C=function(){for(var t=new Array(256),r=new Array(256),e=0;e<8;e+=1)t[e]=1<<e;for(e=8;e<256;e+=1)t[e]=t[e-4]^t[e-5]^t[e-6]^t[e-8];for(e=0;e<255;e+=1)r[t[e]]=e;var n={glog:function(t){if(t<1)throw"glog("+t+")";return r[t]},gexp:function(r){for(;r<0;)r+=255;for(;r>=256;)r-=255;return t[r]}};return n}();function k(t,r){if(void 0===t.length)throw t.length+"/"+r;var e=function(){for(var e=0;e<t.length&&0==t[e];)e+=1;for(var n=new Array(t.length-e+r),o=0;o<t.length-e;o+=1)n[o]=t[o+e];return n}(),n={getAt:function(t){return e[t]},getLength:function(){return e.length},multiply:function(t){for(var r=new Array(n.getLength()+t.getLength()-1),e=0;e<n.getLength();e+=1)for(var o=0;o<t.getLength();o+=1)r[e+o]^=C.gexp(C.glog(n.getAt(e))+C.glog(t.getAt(o)));return k(r,0)},mod:function(t){if(n.getLength()-t.getLength()<0)return n;for(var r=C.glog(n.getAt(0))-C.glog(t.getAt(0)),e=new Array(n.getLength()),o=0;o<n.getLength();o+=1)e[o]=n.getAt(o);for(o=0;o<t.getLength();o+=1)e[o]^=C.gexp(C.glog(t.getAt(o))+r);return k(e,0).mod(t)}};return n}var A=function(){var t=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12,7,37,13],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],r=function(t,r){var e={};return e.totalCount=t,e.dataCount=r,e},e={};return e.getRSBlocks=function(e,n){var o=function(r,e){switch(e){case g.L:return t[4*(r-1)+0];case g.M:return t[4*(r-1)+1];case g.Q:return t[4*(r-1)+2];case g.H:return t[4*(r-1)+3];default:return}}(e,n);if(void 0===o)throw"bad rs block @ typeNumber:"+e+"/errorCorrectionLevel:"+n;for(var i=o.length/3,a=[],u=0;u<i;u+=1)for(var f=o[3*u+0],c=o[3*u+1],l=o[3*u+2],h=0;h<f;h+=1)a.push(r(c,l));return a},e}(),b=function(){var t=[],r=0,e={getBuffer:function(){return t},getAt:function(r){var e=Math.floor(r/8);return 1==(t[e]>>>7-r%8&1)},put:function(t,r){for(var n=0;n<r;n+=1)e.putBit(1==(t>>>r-n-1&1))},getLengthInBits:function(){return r},putBit:function(e){var n=Math.floor(r/8);t.length<=n&&t.push(0),e&&(t[n]|=128>>>r%8),r+=1}};return e},M=function(t){var r=a,e=t,n={getMode:function(){return r},getLength:function(t){return e.length},write:function(t){for(var r=e,n=0;n+2<r.length;)t.put(o(r.substring(n,n+3)),10),n+=3;n<r.length&&(r.length-n==1?t.put(o(r.substring(n,n+1)),4):r.length-n==2&&t.put(o(r.substring(n,n+2)),7))}},o=function(t){for(var r=0,e=0;e<t.length;e+=1)r=10*r+i(t.charAt(e));return r},i=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-"0".charCodeAt(0);throw"illegal char :"+t};return n},x=function(t){var r=u,e=t,n={getMode:function(){return r},getLength:function(t){return e.length},write:function(t){for(var r=e,n=0;n+1<r.length;)t.put(45*o(r.charAt(n))+o(r.charAt(n+1)),11),n+=2;n<r.length&&t.put(o(r.charAt(n)),6)}},o=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-"0".charCodeAt(0);if("A"<=t&&t<="Z")return t.charCodeAt(0)-"A".charCodeAt(0)+10;switch(t){case" ":return 36;case"$":return 37;case"%":return 38;case"*":return 39;case"+":return 40;case"-":return 41;case".":return 42;case"/":return 43;case":":return 44;default:throw"illegal char :"+t}};return n},m=function(r){var e=f,n=t.stringToBytes(r),o={getMode:function(){return e},getLength:function(t){return n.length},write:function(t){for(var r=0;r<n.length;r+=1)t.put(n[r],8)}};return o},L=function(r){var e=c,n=t.stringToBytesFuncs.SJIS;if(!n)throw"sjis not supported.";!function(){var t=n("友");if(2!=t.length||38726!=(t[0]<<8|t[1]))throw"sjis not supported."}();var o=n(r),i={getMode:function(){return e},getLength:function(t){return~~(o.length/2)},write:function(t){for(var r=o,e=0;e+1<r.length;){var n=(255&r[e])<<8|255&r[e+1];if(33088<=n&&n<=40956)n-=33088;else{if(!(57408<=n&&n<=60351))throw"illegal char at "+(e+1)+"/"+n;n-=49472}n=192*(n>>>8&255)+(255&n),t.put(n,13),e+=2}if(e<r.length)throw"illegal char at "+(e+1)}};return i},D=function(){var t=[],r={writeByte:function(r){t.push(255&r)},writeShort:function(t){r.writeByte(t),r.writeByte(t>>>8)},writeBytes:function(t,e,n){e=e||0,n=n||t.length;for(var o=0;o<n;o+=1)r.writeByte(t[o+e])},writeString:function(t){for(var e=0;e<t.length;e+=1)r.writeByte(t.charCodeAt(e))},toByteArray:function(){return t},toString:function(){var r="";r+="[";for(var e=0;e<t.length;e+=1)e>0&&(r+=","),r+=t[e];return r+="]"}};return r},S=function(t){var r=t,e=0,n=0,o=0,i={read:function(){for(;o<8;){if(e>=r.length){if(0==o)return-1;throw"unexpected end of file./"+o}var t=r.charAt(e);if(e+=1,"="==t)return o=0,-1;t.match(/^\s$/)||(n=n<<6|a(t.charCodeAt(0)),o+=6)}var i=n>>>o-8&255;return o-=8,i}},a=function(t){if(65<=t&&t<=90)return t-65;if(97<=t&&t<=122)return t-97+26;if(48<=t&&t<=57)return t-48+52;if(43==t)return 62;if(47==t)return 63;throw"c:"+t};return i},I=function(t,r,e){for(var n=function(t,r){var e=t,n=r,o=new Array(t*r),i={setPixel:function(t,r,n){o[r*e+t]=n},write:function(t){t.writeString("GIF87a"),t.writeShort(e),t.writeShort(n),t.writeByte(128),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(0),t.writeByte(255),t.writeByte(255),t.writeByte(255),t.writeString(","),t.writeShort(0),t.writeShort(0),t.writeShort(e),t.writeShort(n),t.writeByte(0);var r=a(2);t.writeByte(2);for(var o=0;r.length-o>255;)t.writeByte(255),t.writeBytes(r,o,255),o+=255;t.writeByte(r.length-o),t.writeBytes(r,o,r.length-o),t.writeByte(0),t.writeString(";")}},a=function(t){for(var r=1<<t,e=1+(1<<t),n=t+1,i=u(),a=0;a<r;a+=1)i.add(String.fromCharCode(a));i.add(String.fromCharCode(r)),i.add(String.fromCharCode(e));var f,c,g,l=D(),h=(f=l,c=0,g=0,{write:function(t,r){if(t>>>r!=0)throw"length over";for(;c+r>=8;)f.writeByte(255&(t<<c|g)),r-=8-c,t>>>=8-c,g=0,c=0;g|=t<<c,c+=r},flush:function(){c>0&&f.writeByte(g)}});h.write(r,n);var s=0,v=String.fromCharCode(o[s]);for(s+=1;s<o.length;){var d=String.fromCharCode(o[s]);s+=1,i.contains(v+d)?v+=d:(h.write(i.indexOf(v),n),i.size()<4095&&(i.size()==1<<n&&(n+=1),i.add(v+d)),v=d)}return h.write(i.indexOf(v),n),h.write(e,n),h.flush(),l.toByteArray()},u=function(){var t={},r=0,e={add:function(n){if(e.contains(n))throw"dup key:"+n;t[n]=r,r+=1},size:function(){return r},indexOf:function(r){return t[r]},contains:function(r){return void 0!==t[r]}};return e};return i}(t,r),o=0;o<r;o+=1)for(var i=0;i<t;i+=1)n.setPixel(i,o,e(i,o));var a=D();n.write(a);for(var u=function(){var t=0,r=0,e=0,n="",o={},i=function(t){n+=String.fromCharCode(a(63&t))},a=function(t){if(t<0);else{if(t<26)return 65+t;if(t<52)return t-26+97;if(t<62)return t-52+48;if(62==t)return 43;if(63==t)return 47}throw"n:"+t};return o.writeByte=function(n){for(t=t<<8|255&n,r+=8,e+=1;r>=6;)i(t>>>r-6),r-=6},o.flush=function(){if(r>0&&(i(t<<6-r),t=0,r=0),e%3!=0)for(var o=3-e%3,a=0;a<o;a+=1)n+="="},o.toString=function(){return n},o}(),f=a.toByteArray(),c=0;c<f.length;c+=1)u.writeByte(f[c]);return u.flush(),"data:image/gif;base64,"+u};return t}();qrcode.stringToBytesFuncs["UTF-8"]=function(t){return function(t){for(var r=[],e=0;e<t.length;e++){var n=t.charCodeAt(e);n<128?r.push(n):n<2048?r.push(192|n>>6,128|63&n):n<55296||n>=57344?r.push(224|n>>12,128|n>>6&63,128|63&n):(e++,n=65536+((1023&n)<<10|1023&t.charCodeAt(e)),r.push(240|n>>18,128|n>>12&63,128|n>>6&63,128|63&n))}return r}(t)},function(t){"function"==typeof define&&define.amd?define([],t):"object"==typeof exports&&(module.exports=t())}(function(){return qrcode});`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // РОЗДІЛЬНИК АРГУМЕНТІВ У ФОРМУЛАХ
