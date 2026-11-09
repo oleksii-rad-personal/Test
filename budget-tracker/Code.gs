@@ -225,7 +225,7 @@ function onOpen() {
     .addItem('Заповнити демо-даними', 'fillDemoData')
     .addItem('Прибрати демо-дані', 'clearDemoData')
     .addSeparator()
-    .addItem('Створити форму для телефону', 'createEntryForm')
+    .addItem('Створити / оновити форму для телефону', 'createEntryForm')
     .addItem('Перевірити таблицю', 'selfCheck')
     .addToUi();
 }
@@ -675,8 +675,10 @@ function buildStart_(sh) {
   });
 
   writeBlockTitle_(sh, START.formRow - 1, 'ФОРМА ДЛЯ ТЕЛЕФОНУ', 2);
-  sh.getRange(START.formRow, 3).setValue('Ще не створена: меню «💜 Трекер» → «Створити форму для телефону».')
+  sh.getRange(START.formRow, 3).setValue('Ще не створена: меню «💜 Трекер» → «Створити / оновити форму для телефону».')
     .setFontColor(THEME.muted);
+  const formUrl = PropertiesService.getDocumentProperties().getProperty(FORM.propUrl);
+  if (formUrl) writeFormLink_(sh, formUrl);
 
   writeBlockTitle_(sh, START.checkRow - 1, 'ПЕРЕВІРКА ТАБЛИЦІ', 2);
   sh.getRange(START.checkRow, 3).setValue('Меню «💜 Трекер» → «Перевірити таблицю».').setFontColor(THEME.muted);
@@ -1574,6 +1576,18 @@ function selfCheck() {
   ok(!accBad.length, accBad.length ? 'Баланси рахунків не сходяться: ' + accBad.join('; ')
     : 'Баланси рахунків = початкові залишки + доходи − списання');
 
+  // 5б. Форма для телефону.
+  const formId = props.getProperty(FORM.propId);
+  if (formId) {
+    let formOk = false;
+    try { formOk = !!FormApp.openById(formId).getPublishedUrl(); } catch (e) { formOk = false; }
+    const trig = ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === FORM.handler).length;
+    ok(formOk && trig === 1, formOk && trig === 1 ? 'Форма для телефону працює, тригер один'
+      : 'Форма: ' + (formOk ? '' : 'не відкривається; ') + 'тригерів onFormSubmit: ' + trig + ' (має бути 1) — запусти «Створити / оновити форму»');
+  } else {
+    res.push('• Форма для телефону ще не створена.');
+  }
+
   // 6. Знак $ у значеннях і форматах.
   const dollars = [];
   trackerSheetNames_().forEach(name => {
@@ -2003,13 +2017,164 @@ function buildCalendar_(ss, sh) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ЕТАП 4 (поки заглушка)
+// ЕТАП 4: ФОРМА ДЛЯ ТЕЛЕФОНУ
+// Сторінка 1: сума + тип. Тип веде на свою секцію з категоріями цього типу.
+// Відповідь тригер onFormSubmit одразу переносить у «Операції».
 // ─────────────────────────────────────────────────────────────────────────────
-function createEntryForm() { notYet_('Форма для телефону з\'явиться на етапі 4.'); }
+const FORM = {
+  title: 'Нова операція',
+  amount: 'Сума, грн', type: 'Тип', category: 'Категорія', account: 'Рахунок', comment: 'Коментар', date: 'Дата',
+  source: 'форма',
+  propId: 'BT_FORM_ID', propUrl: 'BT_FORM_URL', propSs: 'BT_SS_ID',
+  responsesSheet: '_Форма',
+  handler: 'onFormSubmit',
+};
 
-function notYet_(msg) {
-  Logger.log(msg);
-  SpreadsheetApp.getActiveSpreadsheet().toast(msg, '💜 Трекер', 5);
+function createEntryForm() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEETS.ops)) {
+    ss.toast('Спочатку побудуй трекер: меню «💜 Трекер» → «Побудувати трекер з нуля».', '💜 Трекер', 8);
+    return;
+  }
+  const props = PropertiesService.getDocumentProperties();
+  let form = null;
+  const oldId = props.getProperty(FORM.propId);
+  if (oldId) {
+    try { form = FormApp.openById(oldId); } catch (e) { form = null; }
+  }
+  const isNew = !form;
+  if (isNew) form = FormApp.create(FORM.title);
+  else form.getItems().forEach(it => form.deleteItem(it));
+
+  form.setTitle(FORM.title)
+    .setDescription('10 секунд: сума → тип → категорія → «Надіслати». Решта — необов\'язково.')
+    .setCollectEmail(false)
+    .setAllowResponseEdits(false)
+    .setProgressBar(false)
+    .setShowLinkToRespondAgain(true)
+    .setConfirmationMessage('Записано ✓ Дашборд уже перерахувався.');
+
+  // Сторінка 1.
+  form.addTextItem().setTitle(FORM.amount).setRequired(true)
+    .setValidation(FormApp.createTextValidation()
+      .requireTextMatchesPattern('^ *[0-9][0-9 ]*([.,][0-9]{1,2})? *$')
+      .setHelpText('Лише число, наприклад 250 або 1 250,50').build());
+  const typeItem = form.addMultipleChoiceItem().setTitle(FORM.type).setRequired(true);
+
+  // Секція для кожного типу.
+  const accounts = listValues_(ss, 'L_Acc');
+  const pages = [];
+  REF.types.forEach((type, k) => {
+    const page = form.addPageBreakItem().setTitle(type);
+    if (k > 0) page.setGoToPage(FormApp.PageNavigationType.SUBMIT); // попередня секція → «Надіслати»
+    pages.push(page);
+    const cats = listValues_(ss, TYPE_LIST[type]);
+    if (cats.length) {
+      form.addMultipleChoiceItem().setTitle(FORM.category).setChoiceValues(cats).setRequired(true);
+    } else {
+      page.setHelpText('Категорій цього типу ще немає — додай їх у «Налаштуваннях», потім меню «Створити / оновити форму».');
+      form.addTextItem().setTitle(FORM.category).setRequired(false);
+    }
+    if (accounts.length > 1) {
+      form.addListItem().setTitle(FORM.account).setHelpText('Порожньо — основний рахунок').setChoiceValues(accounts).setRequired(false);
+    }
+    form.addTextItem().setTitle(FORM.comment).setRequired(false);
+    form.addDateItem().setTitle(FORM.date).setHelpText('Порожньо — сьогодні').setRequired(false);
+  });
+  typeItem.setChoices(REF.types.map((type, k) => typeItem.createChoice(type, pages[k])));
+
+  // Відповіді — ще й у резервний прихований аркуш.
+  if (isNew) {
+    form.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
+    SpreadsheetApp.flush();
+    hideResponsesSheet_(ss, form);
+  }
+
+  // Тригер без дублів.
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === FORM.handler)
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger(FORM.handler).forForm(form).onFormSubmit().create();
+
+  let url = form.getPublishedUrl();
+  try { url = form.shortenFormUrl(url); } catch (e) { /* лишаємо повне посилання */ }
+  props.setProperty(FORM.propId, form.getId());
+  props.setProperty(FORM.propUrl, url);
+  props.setProperty(FORM.propSs, ss.getId());
+
+  const start = ss.getSheetByName(SHEETS.start);
+  if (start) writeFormLink_(start, url);
+  ss.toast((isNew ? 'Форму створено' : 'Форму оновлено') + '. Посилання — на вкладці «Старт».', '💜 Трекер', 8);
+  return url;
+}
+
+function listValues_(ss, key) {
+  const rng = listRange_(ss, key);
+  return rng ? rng.getValues().map(v => v[0]).filter(v => v !== '' && v !== null) : [];
+}
+
+function hideResponsesSheet_(ss, form) {
+  const formUrl = form.getEditUrl().replace(/\/edit.*$/, '');
+  const sh = ss.getSheets().filter(s => {
+    const u = s.getFormUrl && s.getFormUrl();
+    return u && u.replace(/\/viewform.*$|\/edit.*$/, '') === formUrl;
+  })[0];
+  if (!sh) return;
+  let name = FORM.responsesSheet;
+  if (ss.getSheetByName(name) && ss.getSheetByName(name).getSheetId() !== sh.getSheetId()) name += ' ' + Date.now();
+  sh.setName(name);
+  sh.hideSheet();
+}
+
+function writeFormLink_(start, url) {
+  start.getRange(START.formRow, 3)
+    .setFormula(X_('=HYPERLINK("' + url + '","📱 Відкрити форму «Нова операція»")'))
+    .setFontSize(12).setFontWeight('bold').setFontColor(THEME.primary);
+  start.getRange(START.formRow + 1, 3)
+    .setValue('Відкрий посилання на телефоні й додай на головний екран («Поділитися» → «На екран Додому»). ' +
+      'Змінила категорії в «Налаштуваннях» — меню «Створити / оновити форму».')
+    .setFontColor(THEME.muted).setFontStyle('italic').setWrap(true);
+}
+
+/** Інсталюваний тригер форми: відповідь → новий рядок «Операцій». */
+function onFormSubmit(e) {
+  const props = PropertiesService.getDocumentProperties();
+  let ss = null;
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (err) { ss = null; }
+  if (!ss) ss = SpreadsheetApp.openById(props.getProperty(FORM.propSs));
+
+  const answers = {};
+  e.response.getItemResponses().forEach(ir => {
+    const title = ir.getItem().getTitle();
+    const v = ir.getResponse();
+    if (v !== '' && v !== null && answers[title] === undefined) answers[title] = v;
+  });
+
+  const amount = Number(String(answers[FORM.amount] || '').replace(/\s/g, '').replace(',', '.'));
+  if (!(amount > 0)) {
+    Logger.log('Форма: некоректна сума «' + answers[FORM.amount] + '» — рядок не додано.');
+    return;
+  }
+  const tz = ss.getSpreadsheetTimeZone();
+  const date = answers[FORM.date]
+    ? String(answers[FORM.date]).slice(0, 10)
+    : Utilities.formatDate(e.response.getTimestamp(), tz, 'yyyy-MM-dd');
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const sh = ss.getSheetByName(SHEETS.ops);
+    const row = firstFreeOpsRow_(sh);
+    if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 100);
+    sh.getRange(row, 1, 1, OPS_HEADERS.length).setValues([[
+      date, answers[FORM.type] || TYPES.expense, amount, answers[FORM.category] || '',
+      answers[FORM.account] || '', answers[FORM.comment] || '', FORM.source,
+    ]]);
+    applyCategoryValidation_(sh, row, 1, false);
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
