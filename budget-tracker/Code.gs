@@ -73,7 +73,9 @@ const TYPES = { income: 'Дохід', expense: 'Витрата', debt: 'Борг
 const REF = {
   types:  [TYPES.income, TYPES.expense, TYPES.debt, TYPES.saving],
   freq:   [['Щомісяця', 1], ['Раз на квартал', 3], ['Раз на рік', 12]],
-  groups: ['Потреби', 'Бажання'],
+  groups: ['Потреби', 'Бажання', 'Освіта', 'Подарунки'],
+  savKinds: ['Подушка й цілі', 'Інвестиції'],
+  grpCodes: ['need', 'want', 'edu', 'gift', 'debt', 'save', 'invest'],
   cycle:  ['Від основної виплати', 'Календарний місяць'],
   current: 'Поточний цикл',
   currentMonth: 'Поточний місяць',
@@ -109,11 +111,43 @@ const GENERAL_ROWS = [
   { key: 'Over',  label: 'Перевищення, %',      t: 'pct',  hint: 'Категорія червона, коли витрачено більше цього.' },
 ];
 
-const RULE_ROWS = [
-  { key: 'Needs', label: 'Потреби',      t: 'pct', hint: 'Житло, їжа, транспорт, борги.' },
-  { key: 'Wants', label: 'Бажання',      t: 'pct', hint: 'Кафе, одяг, розваги, підписки.' },
-  { key: 'Save',  label: 'Заощадження',  t: 'pct', hint: 'Подушка і цілі.' },
+/**
+ * Правила розподілу доходу. Кошик: [назва, частка, групи (коди через пробіл), що входить].
+ * Коди груп: need — потреби, want — бажання, edu — освіта, gift — подарунки/допомога,
+ * debt — платежі по боргах, save — заощадження, invest — інвестиції.
+ */
+const RULES = [
+  { name: '50/30/20', title: '50/30/20 — класика', tag: 'рекомендую',
+    about: 'Половина — на потреби, третина — на бажання, пʼята частина — відкласти. Підходить більшості.',
+    buckets: [['Потреби', 0.5, 'need debt', 'житло, їжа, транспорт, борги'],
+              ['Бажання', 0.3, 'want edu gift', 'кафе, розваги, одяг, підписки'],
+              ['Заощадження', 0.2, 'save invest', 'подушка, цілі, інвестиції']] },
+  { name: '70/20/10', title: '70/20/10 — просте',
+    about: 'Не ділиш на «потреби» і «бажання»: 70% живеш, 20% відкладаєш, 10% — на борги й допомогу іншим.',
+    buckets: [['Життя', 0.7, 'need want edu', 'усі щоденні й обовʼязкові витрати'],
+              ['Заощадження', 0.2, 'save invest', 'подушка, цілі, інвестиції'],
+              ['Борги й допомога', 0.1, 'debt gift', 'погашення боргів, подарунки, благодійність']] },
+  { name: '80/20', title: '80/20 — спершу заплати собі',
+    about: 'Одразу після зарплати відкладаєш 20%, а рештою користуєшся вільно, без підрахунку категорій.',
+    buckets: [['Заощадження', 0.2, 'save invest', 'відкладаєш першим, щойно прийшли гроші'],
+              ['Усе інше', 0.8, 'need want edu gift debt', 'витрачаєш як зручно']] },
+  { name: '60/20/20', title: '60/20/20 — коли обовʼязкових витрат багато',
+    about: 'Для великих міст і оренди: 60% на потреби, по 20% — на бажання і заощадження.',
+    buckets: [['Потреби', 0.6, 'need debt', 'житло, їжа, транспорт, борги'],
+              ['Бажання', 0.2, 'want edu gift', 'кафе, розваги, одяг, підписки'],
+              ['Заощадження', 0.2, 'save invest', 'подушка, цілі, інвестиції']] },
+  { name: '6 глечиків', title: '6 глечиків — для системних',
+    about: 'Дохід ділиться на 6 «глечиків»: потреби, фінансова свобода, довгострокові цілі, освіта, розваги, подарунки.',
+    buckets: [['Потреби', 0.55, 'need debt', 'житло, їжа, транспорт, борги'],
+              ['Фінансова свобода', 0.1, 'invest', 'інвестиції, що приносять дохід'],
+              ['Довгострокові', 0.1, 'save', 'подушка, великі покупки, відпустка'],
+              ['Освіта', 0.1, 'edu', 'курси, книги, навчання'],
+              ['Розваги', 0.1, 'want', 'кафе, хобі, подорожі'],
+              ['Подарунки', 0.05, 'gift', 'подарунки, благодійність']] },
+  { name: 'Без правила', title: 'Без правила — просто стежити',
+    about: 'Без цілей розподілу: трекер лише покаже, куди йдуть гроші.', buckets: [] },
 ];
+const RULE_SLOTS = 6;
 
 const SETTINGS_BLOCKS = [
   {
@@ -136,13 +170,27 @@ const SETTINGS_BLOCKS = [
       { key: 'Freq',  h: 'Як часто',             t: 'list:L_Freq',  w: 130 },
       { key: 'Month', h: 'Місяць оплати (для квартал / рік)', t: 'list:L_Month', w: 150 },
       { key: 'Day',   h: 'День оплати',          t: 'day',          w: 100 },
-      { key: 'Group', h: 'Група 50/30/20',       t: 'list:L_Group', w: 120 },
-      { key: 'Sub',   h: 'Підписка',             t: 'check',        w: 85 },
-      { key: 'Use',   h: 'Користуюсь',           t: 'check',        w: 100 },
+      { key: 'Group', h: 'Група',                t: 'list:L_Group', w: 120 },
       { key: 'Mine',  h: 'Моя сума',             t: 'f', fmt: 'money', w: 120,
         f: '=IF(OR({Name}="",{Total}=""),"",{Total}*IF({Share}="",1,{Share}))' },
       { key: 'Reserve', h: 'Резерв на місяць',   t: 'f', fmt: 'money', w: 130,
         f: '=IF({Mine}="","",{Mine}/IFERROR(VLOOKUP({Freq},' + NR + 'L_Freq,2,FALSE),1))' },
+    ],
+  },
+  {
+    key: 'Subs', title: 'ПІДПИСКИ', rows: 12,
+    hint: 'Netflix, Spotify, YouTube, iCloud… Сума — за один платіж. Не користуєшся — зніми «Користуюсь», і я покажу, скільки можна звільнити.',
+    cols: [
+      { key: 'Name',  h: 'Підписка',                          t: 'text',         w: 190 },
+      { key: 'Total', h: 'Сума за раз',                       t: 'money',        w: 130 },
+      { key: 'Freq',  h: 'Як часто',                          t: 'list:L_Freq',  w: 130 },
+      { key: 'Month', h: 'Місяць оплати (для квартал / рік)', t: 'list:L_Month', w: 150 },
+      { key: 'Day',   h: 'День списання',                     t: 'day',          w: 110 },
+      { key: 'Use',   h: 'Користуюсь',                        t: 'check',        w: 100 },
+      { key: 'Mine',  h: 'Сума',                              t: 'f', fmt: 'money', w: 110,
+        f: '=IF(OR({Name}="",{Total}=""),"",{Total})' },
+      { key: 'Year',  h: 'За рік',                            t: 'f', fmt: 'money', w: 120,
+        f: '=IF({Mine}="","",{Mine}*12/IFERROR(VLOOKUP({Freq},' + NR + 'L_Freq,2,FALSE),1))' },
     ],
   },
   {
@@ -151,7 +199,7 @@ const SETTINGS_BLOCKS = [
     cols: [
       { key: 'Name',   h: 'Підкатегорія',      t: 'text',         w: 190 },
       { key: 'Budget', h: 'Місячний бюджет',   t: 'money',        w: 130 },
-      { key: 'Group',  h: 'Група 50/30/20',    t: 'list:L_Group', w: 120 },
+      { key: 'Group',  h: 'Група',             t: 'list:L_Group', w: 120 },
       { key: 'Week',   h: 'Тижневий бюджет',   t: 'f', fmt: 'money', w: 130,
         f: '=IF(OR({Name}="",{Budget}=""),"",{Budget}*12/52)' },
     ],
@@ -181,6 +229,7 @@ const SETTINGS_BLOCKS = [
       { key: 'Target',  h: 'Цільова сума',      t: 'money', w: 130 },
       { key: 'Monthly', h: 'Відкладати щомісяця', t: 'money', w: 150 },
       { key: 'Date',    h: 'Бажана дата',       t: 'date',  w: 110 },
+      { key: 'Kind',    h: 'Вид',               t: 'list:L_SavKind', w: 140 },
       { key: 'Saved',   h: 'Накопичено',        t: 'f', fmt: 'money', w: 120,
         f: '=IF({Name}="","",SUMIFS(' + OPS_REF + '!$C:$C,' + OPS_REF + '!$B:$B,"' + TYPES.saving + '",' + OPS_REF + '!$D:$D,{Name}))' },
     ],
@@ -216,6 +265,7 @@ const SEEDS = {
     { Name: 'Інше',             Group: 'Бажання' },
   ],
   Debt: [],
+  Subs: [],
   Sav: [{ Name: 'Подушка безпеки' }, { Name: 'Відпустка' }],
   Acc: [{ Name: 'Картка', Main: true }, { Name: 'Готівка' }],
 };
@@ -236,6 +286,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Створити / оновити форму для телефону', 'createEntryForm')
     .addItem('Перевірити таблицю', 'selfCheck')
+    .addItem('🧩 Відновити категорії з операцій', 'repairCategories')
     .addSeparator()
     .addItem('🏦 Імпорт виписки з банку…', 'showStatementImport')
     .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
@@ -266,8 +317,8 @@ function buildTracker(opts) {
   deleteTrackerSheets_(ss);
 
   // Спочатку створюємо всі аркуші, бо вони посилаються один на одного.
-  const order = [SHEETS.start, SHEETS.dash, SHEETS.ops, SHEETS.year, SHEETS.goals, SHEETS.debts,
-                 SHEETS.subs, SHEETS.cal, SHEETS.settings, SHEETS.lists];
+  const order = [SHEETS.start, SHEETS.settings, SHEETS.dash, SHEETS.ops, SHEETS.year, SHEETS.goals,
+                 SHEETS.debts, SHEETS.subs, SHEETS.cal, SHEETS.lists];
   const sh = {};
   order.forEach((name, i) => { sh[name] = ss.insertSheet(name, i); });
   removeTempSheet_(ss);
@@ -285,7 +336,7 @@ function buildTracker(opts) {
   buildSubs_(ss, sh[SHEETS.subs]);
   buildCalendar_(ss, sh[SHEETS.cal]);
   buildStart_(sh[SHEETS.start]);
-  if (keep) restoreUserData_(ss, saved);
+  if (keep) { restoreUserData_(ss, saved); syncCategoriesFromOps_(ss); }
 
   sh[SHEETS.lists].hideSheet();
   ss.setActiveSheet(sh[SHEETS.start]);
@@ -403,6 +454,14 @@ function buildListsStatic_(sh) {
   put('P', [REF.currentMonth].concat(REF.months));
   ss.setNamedRange(NR + 'L_CalPeriod', sh.getRange(2, 16, REF.months.length + 1, 1));
   sh.getRange('Q2').setValue(HISTORY_MONTHS);
+  sh.getRange('T1:W1').setValues([['Правила', 'Коди кошиків', 'Коди груп', 'Види заощаджень']]).setFontWeight('bold');
+  put('T', RULES.map(r => r.name));
+  put('V', REF.grpCodes);
+  put('W', REF.savKinds);
+  ss.setNamedRange(NR + 'L_Rule', sh.getRange(2, 20, RULES.length, 1));
+  ss.setNamedRange(NR + 'Rule_Codes', sh.getRange(2, 21, RULE_SLOTS, 1));
+  ss.setNamedRange(NR + 'L_GrpCodes', sh.getRange(2, 22, REF.grpCodes.length, 1));
+  ss.setNamedRange(NR + 'L_SavKind', sh.getRange(2, 23, REF.savKinds.length, 1));
   ss.setNamedRange(NR + 'HistN', sh.getRange('Q2'));
   ss.setNamedRange(NR + 'L_Period', sh.getRange(2, 13, REF.months.length + 1, 1));
 
@@ -431,11 +490,11 @@ function buildListsDynamic_(ss, sh) {
   const nonBlank = expr => '=LET(v,' + expr + ',IFERROR(FILTER(v,v<>""),""))';
   const f = {
     B: nonBlank(NR + 'Inc_Name'),
-    C: nonBlank('VSTACK(' + NR + 'Reg_Name,' + NR + 'Var_Name)'),
+    C: nonBlank('VSTACK(' + NR + 'Reg_Name,' + NR + 'Subs_Name,' + NR + 'Var_Name)'),
     D: nonBlank(NR + 'Debt_Name'),
     E: nonBlank(NR + 'Sav_Name'),
     F: nonBlank(NR + 'Acc_Name'),
-    K: nonBlank('VSTACK(' + NR + 'Inc_Name,' + NR + 'Reg_Name,' + NR + 'Var_Name,' + NR + 'Debt_Name,' + NR + 'Sav_Name)'),
+    K: nonBlank('VSTACK(' + NR + 'Inc_Name,' + NR + 'Reg_Name,' + NR + 'Subs_Name,' + NR + 'Var_Name,' + NR + 'Debt_Name,' + NR + 'Sav_Name)'),
   };
   Object.keys(f).forEach(c => sh.getRange(c + '2').setFormula(F_(f[c])));
   sh.protect().setDescription('Службовий аркуш трекера').setWarningOnly(true);
@@ -456,7 +515,7 @@ function buildSettings_(ss, sh) {
 
   let row = 4;
   row = buildKeyValueBlock_(ss, sh, row, 'ЗАГАЛЬНЕ', GENERAL_ROWS);
-  row = buildKeyValueBlock_(ss, sh, row, 'ПРАВИЛО 50/30/20', RULE_ROWS);
+  row = buildRuleBlock_(ss, sh, row);
 
   // Значення за замовчуванням загального блоку.
   const today = todayParts_(ss);
@@ -465,9 +524,7 @@ function buildSettings_(ss, sh) {
   ss.getRangeByName(NR + 'Cycle').setValue(REF.cycle[0]);
   ss.getRangeByName(NR + 'Warn').setValue(0.8);
   ss.getRangeByName(NR + 'Over').setValue(1);
-  ss.getRangeByName(NR + 'Needs').setValue(0.5);
-  ss.getRangeByName(NR + 'Wants').setValue(0.3);
-  ss.getRangeByName(NR + 'Save').setValue(0.2);
+  applyRule_(ss, (profile_().rule) || RULES[0].name);
 
   // Дата розрахунку, що діє насправді (порожня → сьогодні).
   const calc = ss.getRangeByName(NR + 'Calc');
@@ -477,13 +534,6 @@ function buildSettings_(ss, sh) {
   ss.setNamedRange(NR + 'CalcDate', calcNow);
   calc.offset(0, 2).setValue('← діє зараз. ' + GENERAL_ROWS[2].hint);
   protect_(calcNow, 'Дата розрахунку');
-
-  // Сума правила 50/30/20 має бути 100%.
-  const needs = ss.getRangeByName(NR + 'Needs');
-  needs.offset(0, 1).setFormula(F_('=IF(ROUND(SUM(' + needs.offset(0, 0, 3, 1).getA1Notation() + '),4)=1,"✓ разом 100%","⚠ разом має бути 100%")'))
-    .setFontColor(THEME.primary);
-  needs.offset(0, 2).setValue(RULE_ROWS[0].hint).setFontColor(THEME.muted).setFontStyle('italic');
-  protect_(needs.offset(0, 1), 'Перевірка 50/30/20');
 
   SETTINGS_BLOCKS.forEach(block => { row = buildTableBlock_(ss, sh, row, block); });
 
@@ -509,17 +559,54 @@ function buildSettings_(ss, sh) {
     .setHelpText('Дата початку не може бути раніше дати старту трекера (Налаштування → Загальне → Дата старту).')
     .build());
 
-  // «Користуюсь» має сенс лише для підписок — для інших рядків поле сіре.
-  const sub = ss.getRangeByName(NR + 'Reg_Sub');
-  const use = ss.getRangeByName(NR + 'Reg_Use');
-  sh.setConditionalFormatRules(sh.getConditionalFormatRules().concat([
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenFormulaSatisfied(F_('=$' + colLetter_(sub.getColumn()) + use.getRow() + '<>TRUE'))
-      .setBackground(THEME.calcBg).setFontColor(THEME.disabled).setRanges([use]).build(),
-  ]));
-
   sh.setFrozenRows(2);
   trimSheet_(sh, row + 2, 2 + Math.max.apply(null, SETTINGS_BLOCKS.map(b => b.cols.length)) + 1);
+}
+
+/** Блок «Правило розподілу»: вибір правила + до 6 кошиків (назва, частка, що входить). */
+function buildRuleBlock_(ss, sh, row) {
+  writeBlockTitle_(sh, row, 'ПРАВИЛО РОЗПОДІЛУ', 3);
+  row++;
+  sh.getRange(row, 2).setValue('Правило').setFontWeight('bold');
+  const sel = sh.getRange(row, 3);
+  sel.setBackground(THEME.input).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInRange(listRange_(ss, 'L_Rule'), true).setAllowInvalid(false)
+    .setHelpText('Обери правило — кошики й частки заповняться самі.').build());
+  ss.setNamedRange(NR + 'Rule', sel);
+  sh.getRange(row, 4).setValue('Обери правило — кошики й частки заповняться самі. Частки можна змінити.')
+    .setFontColor(THEME.muted).setFontStyle('italic');
+  row++;
+  sh.getRange(row, 2, 1, 3).setValues([['Кошик', 'Частка', 'Що входить']])
+    .setBackground(THEME.headerBg).setFontColor(THEME.headerTxt).setFontWeight('bold');
+  row++;
+  const names = sh.getRange(row, 2, RULE_SLOTS, 1);
+  const shares = sh.getRange(row, 3, RULE_SLOTS, 1);
+  const desc = sh.getRange(row, 4, RULE_SLOTS, 1);
+  names.setBackground(THEME.input);
+  styleInput_(ss, shares, 'pct');
+  desc.setFontColor(THEME.muted).setFontStyle('italic');
+  ss.setNamedRange(NR + 'Rule_Names', names);
+  ss.setNamedRange(NR + 'Rule_Shares', shares);
+  ss.setNamedRange(NR + 'Rule_Desc', desc);
+  row += RULE_SLOTS;
+  const chk = sh.getRange(row, 3);
+  chk.setFormula(F_('=IF(COUNTA(' + names.getA1Notation() + ')=0,"",IF(ROUND(SUM(' + shares.getA1Notation() + '),4)=1,"✓ разом 100%","⚠ разом має бути 100%"))'))
+    .setFontColor(THEME.primary).setFontWeight('bold');
+  protect_(chk, 'Перевірка суми часток');
+  return row + 2;
+}
+
+/** Записує кошики обраного правила в «Налаштування» і коди груп у «_Списки». */
+function applyRule_(ss, name) {
+  const rule = RULES.filter(r => r.name === name)[0] || RULES[0];
+  const sel = ss.getRangeByName(NR + 'Rule');
+  if (!sel) return;
+  if (sel.getValue() !== rule.name) sel.setValue(rule.name);
+  const pad = (arr, f) => { const out = arr.map(f); while (out.length < RULE_SLOTS) out.push(['']); return out; };
+  ss.getRangeByName(NR + 'Rule_Names').setValues(pad(rule.buckets, b => [b[0]]));
+  ss.getRangeByName(NR + 'Rule_Shares').setValues(pad(rule.buckets, b => [b[1]]));
+  ss.getRangeByName(NR + 'Rule_Desc').setValues(pad(rule.buckets, b => [b[3]]));
+  ss.getRangeByName(NR + 'Rule_Codes').setValues(pad(rule.buckets, b => [b[2]]));
 }
 
 /** Блок «назва — значення — підказка». Створює іменовані діапазони NR+key. */
@@ -803,6 +890,9 @@ function applyCategoryValidation_(sh, top, n, clearInvalid) {
 /** «Основне» джерело і «Основний» рахунок — лише одна галочка в блоці. */
 function handleSettingsEdit_(e) {
   if (e.range.getNumRows() !== 1 || e.range.getNumColumns() !== 1) return;
+  const ssE = e.source || SpreadsheetApp.getActiveSpreadsheet();
+  const ruleCell = ssE.getRangeByName(NR + 'Rule');
+  if (ruleCell && within_(e.range, ruleCell)) { applyRule_(ssE, e.range.getValue()); return; }
   if (e.range.getValue() !== true) return;
   const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
   ['Inc_Main', 'Acc_Main'].forEach(key => {
@@ -848,8 +938,8 @@ function dueDateLet_(dayExpr, freqExpr, monthExpr, minDateExpr) {
 function buildDashboard_(ss, sh) {
   styleSheet_(sh);
   sh.setColumnWidth(1, 24);
-  sh.setColumnWidth(2, 230);
-  [130, 120, 120, 120, 120, 130].forEach((w, i) => sh.setColumnWidth(3 + i, w));
+  sh.setColumnWidth(2, 330);
+  [170, 120, 120, 120, 120, 130].forEach((w, i) => sh.setColumnWidth(3 + i, w));
   sh.setColumnWidth(9, 24);
 
   const H = (key, row) => sh.getRange(row, DASH.helperValCol);
@@ -1032,10 +1122,11 @@ function dashCalcLines_(colRange) {
     { key: 'D_Spent', label: '− Уже витрачено (усі операції циклу)',
       f: '=' + sumCycle_(TYPES.expense) + '+' + sumCycle_(TYPES.debt) + '+' + sumCycle_(TYPES.saving) },
     { key: 'D_RegLeft', label: '− Ще сплатити: регулярні', f: '=SUM(' + colRange('reg', 'H') + ')' },
+    { key: 'D_SubsLeft', label: '− Ще сплатити: підписки', f: '=SUM(' + colRange('subs', 'H') + ')' },
     { key: 'D_DebtLeft', label: '− Ще сплатити: борги', f: '=SUM(' + colRange('debt', 'E') + ')' },
     { key: 'D_SavLeft', label: '− Ще відкласти', f: '=SUM(' + colRange('sav', 'E') + ')' },
     { key: 'D_Free', label: 'Підсумок: можу витратити до наступної виплати', bold: true,
-      f: '=@D_Income-@D_Spent-@D_RegLeft-@D_DebtLeft-@D_SavLeft' },
+      f: '=@D_Income-@D_Spent-@D_RegLeft-@D_SubsLeft-@D_DebtLeft-@D_SavLeft' },
   ];
 }
 
@@ -1045,7 +1136,6 @@ function dashCalcLines_(colRange) {
  */
 function dashBlocks_() {
   const inc = TYPES.income, exp = TYPES.expense, debt = TYPES.debt, sav = TYPES.saving;
-  const need = 'INDEX(@L_Group,1)';
   return [
     {
       key: 'inc', title: 'ДОХІД', n: 8, total: true,
@@ -1063,25 +1153,9 @@ function dashBlocks_() {
         { h: 'Прогрес', f: (i, r) => '=IF(E' + r + '="","",SPARKLINE(MIN(E' + r + ',1),@SP_Main))' },
       ],
     },
-    {
-      key: 'reg', title: 'РЕГУЛЯРНІ ПЛАТЕЖІ', n: 15, total: true,
-      hint: g_('Оплатила', 'Оплатив') + ' — внеси операцію з цією категорією, галочка ✓ поставиться сама.',
-      cols: [
-        { h: 'Назва', f: i => '=INDEX(@Reg_Name,' + i + ')', tot: 'label' },
-        { h: 'Моя сума', fmt: FMT.money0, f: (i, r) => '=IF(B' + r + '="",0,N(INDEX(@Reg_Mine,' + i + ')))' },
-        { h: 'Дата оплати', fmt: FMT.date,
-          f: (i, r) => '=IF(B' + r + '="","",' + dueDateLet_(
-            'IF(INDEX(@Reg_Day,' + i + ')="",DAY(@C_Start),INDEX(@Reg_Day,' + i + '))',
-            'INDEX(@Reg_Freq,' + i + ')',
-            'IFERROR(MATCH(INDEX(@Reg_Month,' + i + '),@L_Month,0),MONTH(@Start))') + ')' },
-        { h: 'Сплачено', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(B' + r + '="",0,' + sumCycle_(exp, 'B' + r) + ')' },
-        { h: 'Оплачено', f: (i, r) => '=IF(AND(B' + r + '<>"",C' + r + '>0,E' + r + '>=C' + r + '),"✓","")' },
-        { h: 'Днів до оплати', fmt: FMT.days,
-          f: (i, r) => '=IF(OR(D' + r + '="",F' + r + '="✓",@C_Past),"",D' + r + '-@C_Today)' },
-        { h: 'Ще сплатити', fmt: FMT.money0, tot: 'sum',
-          f: (i, r) => '=IF(OR(D' + r + '="",@C_Past),0,MAX(0,C' + r + '-E' + r + '))' },
-      ],
-    },
+    payBlock_('reg', 'РЕГУЛЯРНІ ПЛАТЕЖІ', 'Reg', 15, exp,
+      g_('Оплатила', 'Оплатив') + ' — внеси операцію з цією категорією, галочка ✓ поставиться сама.'),
+    payBlock_('subs', 'ПІДПИСКИ', 'Subs', 12, exp, 'Списання підписки — це операція «Витрата» з назвою підписки.'),
     {
       key: 'var', title: 'ЗМІННІ ВИТРАТИ', n: 12, total: true,
       hint: 'Жовтий — витрачено понад поріг попередження, червоний — понад бюджет.',
@@ -1134,27 +1208,47 @@ function dashBlocks_() {
       rowsFixed: true,
       cols: [{ h: 'Куди' }, { h: 'Сума', fmt: FMT.money0 }, { h: '% доходу', fmt: FMT.pct }],
       rows: cr => [
-        ['Регулярні платежі', '=SUM(' + cr('reg', 'E') + ')+SUM(' + cr('reg', 'H') + ')'],
-        ['Змінні та інше', '=MAX(0,' + sumCycle_(exp) + '-SUM(' + cr('reg', 'E') + '))'],
+        ['Регулярні й підписки', '=SUM(' + cr('reg', 'E') + ')+SUM(' + cr('reg', 'H') + ')+SUM(' + cr('subs', 'E') + ')+SUM(' + cr('subs', 'H') + ')'],
+        ['Змінні та інше', '=MAX(0,' + sumCycle_(exp) + '-SUM(' + cr('reg', 'E') + ')-SUM(' + cr('subs', 'E') + '))'],
         ['Борги', '=' + sumCycle_(debt) + '+SUM(' + cr('debt', 'E') + ')'],
         ['Заощадження', '=' + sumCycle_(sav) + '+SUM(' + cr('sav', 'E') + ')'],
         ['Вільний залишок', '=MAX(0,@D_Free)'],
       ],
     },
     {
-      key: 'rule', title: 'ПРАВИЛО 50/30/20', n: 3, total: false,
-      hint: 'Потреби (разом з боргами) / бажання / заощадження — у % від доходу циклу.',
+      key: 'grp', title: 'КУДИ ЙДУТЬ ГРОШІ — ЗА ГРУПАМИ', n: 7, total: false,
+      hint: 'Група категорії задається в «Налаштуваннях». Сплачене + ще заплановане в цьому циклі.',
       rowsFixed: true,
-      cols: [{ h: 'Група' }, { h: 'Сума', fmt: FMT.money0 }, { h: '% доходу', fmt: FMT.pct },
+      cols: [{ h: 'Група' }, { h: 'Сума', fmt: FMT.money0 }, { h: '% доходу', fmt: FMT.pct }],
+      rows: cr => {
+        const regAll = '(' + cr('reg', 'E') + '+' + cr('reg', 'H') + ')';
+        const g = k => 'INDEX(@L_Group,' + k + ')';
+        const byGroup = (k, blankToo) => '=SUMPRODUCT(((@Reg_Group=' + g(k) + ')' + (k === 1 ? '+(@Reg_Group="")' : '') + ')*' + regAll + ')+' +
+          'SUMPRODUCT(((@Var_Group=' + g(k) + ')' + (blankToo ? '+(@Var_Group="")' : '') + ')*' + cr('var', 'D') + ')';
+        const savBy = kind => 'SUMPRODUCT((@Sav_Kind' + kind + 'INDEX(@L_SavKind,2))*(' + cr('sav', 'D') + '+' + cr('sav', 'E') + '))';
+        return [
+          ['Потреби', byGroup(1, false)],
+          ['Бажання (з підписками й іншим)', byGroup(2, true) + '+SUM(' + cr('subs', 'E') + ')+SUM(' + cr('subs', 'H') + ')+' +
+            'MAX(0,' + sumCycle_(exp) + '-SUM(' + cr('reg', 'E') + ')-SUM(' + cr('subs', 'E') + ')-SUM(' + cr('var', 'D') + '))'],
+          ['Освіта', byGroup(3, false)],
+          ['Подарунки й допомога', byGroup(4, false)],
+          ['Борги', '=' + sumCycle_(debt) + '+SUM(' + cr('debt', 'E') + ')'],
+          ['Заощадження', '=' + savBy('<>')],
+          ['Інвестиції', '=' + savBy('=')],
+        ];
+      },
+    },
+    {
+      key: 'rule', title: 'ПРАВИЛО РОЗПОДІЛУ', n: RULE_SLOTS, total: false,
+      hint: 'Правило й частки — у «Налаштуваннях». Різниця: + перевищено ціль, − ще є запас.',
+      rowsFixed: true,
+      cols: [{ h: 'Кошик' }, { h: 'Сума', fmt: FMT.money0 }, { h: '% доходу', fmt: FMT.pct },
              { h: 'Ціль', fmt: FMT.pct }, { h: 'Різниця', fmt: FMT.signPct }],
-      rows: cr => [
-        ['Потреби', '=SUMPRODUCT((@Reg_Group=' + need + ')*(' + cr('reg', 'E') + '+' + cr('reg', 'H') + '))+' +
-          'SUMPRODUCT((@Var_Group=' + need + ')*' + cr('var', 'D') + ')+' + sumCycle_(debt) + '+SUM(' + cr('debt', 'E') + ')', '=@Needs'],
-        ['Бажання', '=SUMPRODUCT((@Reg_Group<>' + need + ')*(' + cr('reg', 'E') + '+' + cr('reg', 'H') + '))+' +
-          'SUMPRODUCT((@Var_Group<>' + need + ')*' + cr('var', 'D') + ')+' +
-          'MAX(0,' + sumCycle_(exp) + '-SUM(' + cr('reg', 'E') + ')-SUM(' + cr('var', 'D') + '))', '=@Wants'],
-        ['Заощадження', '=' + sumCycle_(sav) + '+SUM(' + cr('sav', 'E') + ')', '=@Save'],
-      ],
+      rows: cr => Array.from({ length: RULE_SLOTS }, (x, k) => [
+        '=IF(INDEX(@Rule_Names,' + (k + 1) + ')="","",INDEX(@Rule_Names,' + (k + 1) + '))',
+        '=IF(INDEX(@Rule_Names,' + (k + 1) + ')="","",SUMPRODUCT(ISNUMBER(SEARCH(@L_GrpCodes,INDEX(@Rule_Codes,' + (k + 1) + ')))*' + cr('grp', 'C') + '))',
+        '=IF(INDEX(@Rule_Names,' + (k + 1) + ')="","",INDEX(@Rule_Shares,' + (k + 1) + '))',
+      ]),
     },
     {
       key: 'acc', title: 'РАХУНКИ', n: 6, total: true,
@@ -1175,8 +1269,8 @@ function dashBlocks_() {
           'IF(mx>0,"⚠ «"&INDEX(n,MATCH(mx,o,0))&"» — понад бюджет на "&FIXED(mx,0)&" грн. Пригальмуй тут до кінця циклу.",' +
           'IF(mp>@C_Warn,"🟡 «"&INDEX(n,MATCH(mp,p,0))&"» — уже "&TEXT(mp,"0%")&" бюджету.",' +
           '"✓ Усі змінні витрати в межах бюджету."))))'],
-        ['=ARRAYFORMULA(LET(nm,@Reg_Name,k,IFERROR(VLOOKUP(@Reg_Freq,@L_Freq,2,FALSE),1),' +
-          'yr,IFERROR(IF((@Reg_Sub=TRUE)*(@Reg_Use<>TRUE)*(nm<>""),@Reg_Mine*12/k,0),0),mx,MAX(yr),' +
+        ['=ARRAYFORMULA(LET(nm,@Subs_Name,' +
+          'yr,IFERROR(IF((@Subs_Use<>TRUE)*(nm<>""),@Subs_Year*1,0),0),mx,MAX(yr),' +
           'IF(mx>0,"💸 Підписка «"&INDEX(nm,MATCH(mx,yr,0))&"» коштує "&FIXED(mx,0)&" грн на рік, а ти нею не користуєшся. Скасуй — і ці гроші твої.",' +
           '"✓ Невикористаних підписок немає.")))'],
         ['=ARRAYFORMULA(LET(nm,@Debt_Name,l,IFERROR(@Debt_Left*1,0),a,(nm<>"")*(l>0)*(@Debt_Closed<>TRUE),' +
@@ -1186,6 +1280,28 @@ function dashBlocks_() {
       ],
     },
   ];
+}
+
+/** Блок «платежі за графіком» (регулярні, підписки): дата, сплачено, ✓, днів, ще сплатити. */
+function payBlock_(key, title, src, n, exp, hint) {
+  return {
+    key: key, title: title, n: n, total: true, hint: hint,
+    cols: [
+      { h: 'Назва', f: i => '=INDEX(@' + src + '_Name,' + i + ')', tot: 'label' },
+      { h: 'Сума', fmt: FMT.money0, f: (i, r) => '=IF(B' + r + '="",0,N(INDEX(@' + src + '_Mine,' + i + ')))' },
+      { h: 'Дата оплати', fmt: FMT.date,
+        f: (i, r) => '=IF(B' + r + '="","",' + dueDateLet_(
+          'IF(INDEX(@' + src + '_Day,' + i + ')="",DAY(@C_Start),INDEX(@' + src + '_Day,' + i + '))',
+          'INDEX(@' + src + '_Freq,' + i + ')',
+          'IFERROR(MATCH(INDEX(@' + src + '_Month,' + i + '),@L_Month,0),MONTH(@Start))') + ')' },
+      { h: 'Сплачено', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(B' + r + '="",0,' + sumCycle_(exp, 'B' + r) + ')' },
+      { h: 'Оплачено', f: (i, r) => '=IF(AND(B' + r + '<>"",C' + r + '>0,E' + r + '>=C' + r + '),"✓","")' },
+      { h: 'Днів до оплати', fmt: FMT.days,
+        f: (i, r) => '=IF(OR(D' + r + '="",F' + r + '="✓",@C_Past),"",D' + r + '-@C_Today)' },
+      { h: 'Ще сплатити', fmt: FMT.money0, tot: 'sum',
+        f: (i, r) => '=IF(OR(D' + r + '="",@C_Past),0,MAX(0,C' + r + '-E' + r + '))' },
+    ],
+  };
 }
 
 function writeDashBlock_(sh, b, p, colRange) {
@@ -1206,12 +1322,12 @@ function writeDashBlock_(sh, b, p, colRange) {
         sh.setRowHeight(r, 30);
         return;
       }
-      sh.getRange(r, 2).setValue(rv[0]);
+      if (String(rv[0]).charAt(0) === '=') sh.getRange(r, 2).setFormula(X_(rv[0])); else sh.getRange(r, 2).setValue(rv[0]);
       sh.getRange(r, 3).setFormula(X_(rv[1])).setNumberFormat(b.cols[1].fmt);
-      sh.getRange(r, 4).setFormula(X_('=IF(@D_Income=0,"",C' + r + '/@D_Income)')).setNumberFormat(FMT.pct);
+      sh.getRange(r, 4).setFormula(X_('=IF(OR(@D_Income=0,C' + r + '=""),"",C' + r + '/@D_Income)')).setNumberFormat(FMT.pct);
       if (rv[2]) {
         sh.getRange(r, 5).setFormula(X_(rv[2])).setNumberFormat(FMT.pct);
-        sh.getRange(r, 6).setFormula(X_('=IF(D' + r + '="","",D' + r + '-E' + r + ')')).setNumberFormat(FMT.signPct);
+        sh.getRange(r, 6).setFormula(X_('=IF(OR(D' + r + '="",E' + r + '=""),"",D' + r + '-E' + r + ')')).setNumberFormat(FMT.signPct);
       }
     });
   } else {
@@ -1272,7 +1388,8 @@ function fillDemoData() {
   const start = isoDate_(t.y, t.m - 3, 1);
 
   // ── Налаштування
-  setKV_(ss, { Year: t.y, Start: start, Calc: '', Cycle: REF.cycle[0], Warn: 0.8, Over: 1, Needs: 0.5, Wants: 0.3, Save: 0.2 });
+  setKV_(ss, { Year: t.y, Start: start, Calc: '', Cycle: REF.cycle[0], Warn: 0.8, Over: 1 });
+  applyRule_(ss, RULES[0].name);
   setBlockRows_(ss, 'Inc', [
     { Name: 'Зарплата', Main: true, Exp: 30000, Day: 1 },
     { Name: 'Фріланс', Main: false },
@@ -1280,8 +1397,10 @@ function fillDemoData() {
   setBlockRows_(ss, 'Reg', [
     { Name: 'Оренда', Total: 30000, Share: 0.5, Freq: 'Щомісяця', Day: 1, Group: 'Потреби' },
     { Name: 'Комуналка + інтернет', Total: 1950, Share: 1, Freq: 'Щомісяця', Day: 3, Group: 'Потреби' },
-    { Name: 'Фоторедактор', Total: 450, Share: 1, Freq: 'Раз на квартал', Month: mo(1), Day: 12, Group: 'Бажання', Sub: true, Use: false },
-    { Name: 'Хмарне сховище', Total: 1200, Share: 1, Freq: 'Раз на рік', Month: mo(2), Day: 20, Group: 'Бажання', Sub: true, Use: false },
+  ]);
+  setBlockRows_(ss, 'Subs', [
+    { Name: 'Фоторедактор', Total: 450, Freq: 'Раз на квартал', Month: mo(1), Day: 12, Use: false },
+    { Name: 'Хмарне сховище', Total: 1200, Freq: 'Раз на рік', Month: mo(2), Day: 20, Use: false },
   ]);
   setBlockRows_(ss, 'Var', [
     { Name: 'Продукти і кава', Budget: 7000, Group: 'Потреби' },
@@ -1407,7 +1526,7 @@ function splitAmount_(total, n, seed) {
 }
 
 function inputKeys_() {
-  const keys = GENERAL_ROWS.concat(RULE_ROWS).map(r => r.key);
+  const keys = GENERAL_ROWS.map(r => r.key).concat(['Rule', 'Rule_Names', 'Rule_Shares', 'Rule_Desc']);
   SETTINGS_BLOCKS.forEach(b => b.cols.forEach(c => { if (c.t !== 'f') keys.push(b.key + '_' + c.key); }));
   return keys;
 }
@@ -1573,7 +1692,8 @@ function selfCheck() {
   });
   const bad = Object.keys(byMonth).filter(k => Math.abs(byMonth[k].all - byMonth[k].cat) > 0.005);
   ok(!bad.length && !unknown.length, bad.length || unknown.length
-    ? 'Не всі операції мають відому категорію: ' + unknown.slice(0, 5).join('; ')
+    ? 'Не всі операції мають відому категорію: ' + unknown.slice(0, 5).join('; ') +
+      '. Виправити: меню «Трекер» → «🧩 Відновити категорії з операцій»'
     : 'Сума по категоріях = сума в «Операціях» для кожного місяця (' + Object.keys(byMonth).length + ' міс.)');
 
   // 4. Дашборд збігається з «Операціями» за вибраний цикл.
@@ -1709,6 +1829,7 @@ function formulaCol_(sh, top, col, n, f, fmt) {
 const YEAR_GROUPS = [
   { key: 'inc',  title: 'ДОХІД',          type: TYPES.income,  names: 'Inc_Name',  n: 8,  other: true },
   { key: 'reg',  title: 'РЕГУЛЯРНІ',      type: TYPES.expense, names: 'Reg_Name',  n: 15, other: false, heat: true },
+  { key: 'subs', title: 'ПІДПИСКИ',       type: TYPES.expense, names: 'Subs_Name', n: 12, other: false, heat: true },
   { key: 'var',  title: 'ЗМІННІ',         type: TYPES.expense, names: 'Var_Name',  n: 12, other: true,  heat: true },
   { key: 'debt', title: 'БОРГИ',          type: TYPES.debt,    names: 'Debt_Name', n: 8,  other: true },
   { key: 'sav',  title: 'ЗАОЩАДЖЕННЯ',    type: TYPES.saving,  names: 'Sav_Name',  n: 8,  other: true },
@@ -1754,7 +1875,7 @@ function buildYear_(ss, sh) {
         const L = colLetter_(firstCol + m - 1);
         // Для витрат «інше» = усі витрати − регулярні − змінні.
         const minus = g.type === TYPES.expense
-          ? '-SUM(' + L + pos.reg.top + ':' + L + pos.reg.bottom + ')-SUM(' + L + top + ':' + L + bottom + ')'
+          ? '-SUM(' + L + pos.reg.top + ':' + L + pos.reg.bottom + ')-SUM(' + L + pos.subs.top + ':' + L + pos.subs.bottom + ')-SUM(' + L + top + ':' + L + bottom + ')'
           : '-SUM(' + L + top + ':' + L + bottom + ')';
         sh.getRange(row, firstCol + m - 1).setFormula(X_('=' + monthSum_(g.type, null, m) + minus)).setNumberFormat(FMT.money0);
       }
@@ -1782,7 +1903,7 @@ function buildYear_(ss, sh) {
   const t = k => pos[k].total;
   const lines = [
     ['Дохід', L => '=' + L + t('inc')],
-    ['Витрати (з боргами)', L => '=' + L + t('reg') + '+' + L + t('var') + '+' + L + t('debt')],
+    ['Витрати (з боргами)', L => '=' + L + t('reg') + '+' + L + t('subs') + '+' + L + t('var') + '+' + L + t('debt')],
     ['Заощаджено', L => '=' + L + t('sav')],
     ['Залишок', L => '=' + L + (sumHead + 1) + '-' + L + (sumHead + 2) + '-' + L + (sumHead + 3)],
     ['Накопичено з початку року', L => '=SUM($C' + (sumHead + 3) + ':' + L + (sumHead + 3) + ')'],
@@ -1924,28 +2045,28 @@ function buildDebts_(ss, sh) {
 
 // ─── «Підписки» ──────────────────────────────────────────────────────────────
 function buildSubs_(ss, sh) {
-  sheetHead_(sh, 'ПІДПИСКИ', 'Регулярні платежі з галочкою «Підписка» в «Налаштуваннях». Не користуєшся — зніми «Користуюсь» і скасуй.');
+  sheetHead_(sh, 'ПІДПИСКИ', 'Блок «Підписки» в «Налаштуваннях». Не користуєшся — зніми «Користуюсь» і скасуй підписку.');
   [210, 110, 130, 130, 110, 120, 120].forEach((w, i) => sh.setColumnWidth(2 + i, w));
   const n = 15, head = 6, top = 7, idx = 12; // L — номери рядків підписок у «Налаштуваннях» (приховано)
   sh.getRange(head, idx).setValue('№ у налаштуваннях');
-  sh.getRange(top, idx).setFormula(X_('=ARRAYFORMULA(IFERROR(FILTER(ROW(@Reg_Name)-ROW(INDEX(@Reg_Name,1))+1,' +
-    '@Reg_Sub=TRUE,@Reg_Name<>""),""))'));
+  sh.getRange(top, idx).setFormula(X_('=ARRAYFORMULA(IFERROR(FILTER(ROW(@Subs_Name)-ROW(INDEX(@Subs_Name,1))+1,' +
+    '@Subs_Name<>""),""))'));
 
   headerRow_(sh, head, 2, ['Підписка', 'Моя сума', 'Як часто', 'Наступне списання', 'Через', 'За рік', 'Користуюсь']);
   const at = (rng, r) => 'INDEX(@' + rng + ',L' + r + ')';
-  formulaCol_(sh, top, 2, n, (i, r) => '=IF(L' + r + '="","",' + at('Reg_Name', r) + ')');
-  formulaCol_(sh, top, 3, n, (i, r) => '=IF(L' + r + '="",0,N(' + at('Reg_Mine', r) + '))', FMT.money0);
-  formulaCol_(sh, top, 4, n, (i, r) => '=IF(L' + r + '="","",' + at('Reg_Freq', r) + ')');
+  formulaCol_(sh, top, 2, n, (i, r) => '=IF(L' + r + '="","",' + at('Subs_Name', r) + ')');
+  formulaCol_(sh, top, 3, n, (i, r) => '=IF(L' + r + '="",0,N(' + at('Subs_Mine', r) + '))', FMT.money0);
+  formulaCol_(sh, top, 4, n, (i, r) => '=IF(L' + r + '="","",' + at('Subs_Freq', r) + ')');
   formulaCol_(sh, top, 5, n, (i, r) => '=IF(L' + r + '="","",ARRAYFORMULA(LET(t,@C_Today,' +
-    'g,IF(' + at('Reg_Day', r) + '="",DAY(t),' + at('Reg_Day', r) + '),' +
+    'g,IF(' + at('Subs_Day', r) + '="",DAY(t),' + at('Subs_Day', r) + '),' +
     'k,IFERROR(VLOOKUP(D' + r + ',@L_Freq,2,FALSE),1),' +
-    'f,IFERROR(MATCH(' + at('Reg_Month', r) + ',@L_Month,0),MONTH(@Start)),' +
+    'f,IFERROR(MATCH(' + at('Subs_Month', r) + ',@L_Month,0),MONTH(@Start)),' +
     'mo,DATE(YEAR(t),MONTH(t)+SEQUENCE(13,1,0),1),' +
     'dd,DATE(YEAR(mo),MONTH(mo),IF(g>DAY(EOMONTH(mo,0)),DAY(EOMONTH(mo,0)),g)),' +
     'IFERROR(MIN(FILTER(dd,(MOD(MONTH(dd)-f,k)=0)*(dd>=t))),""))))', FMT.date);
   formulaCol_(sh, top, 6, n, (i, r) => '=IF(E' + r + '="","",E' + r + '-@C_Today)', FMT.days);
   formulaCol_(sh, top, 7, n, (i, r) => '=IF(L' + r + '="",0,C' + r + '*12/IFERROR(VLOOKUP(D' + r + ',@L_Freq,2,FALSE),1))', FMT.money0);
-  formulaCol_(sh, top, 8, n, (i, r) => '=IF(L' + r + '="","",IF(' + at('Reg_Use', r) + '=TRUE,"✓ так","✗ ні"))');
+  formulaCol_(sh, top, 8, n, (i, r) => '=IF(L' + r + '="","",IF(' + at('Subs_Use', r) + '=TRUE,"✓ так","✗ ні"))');
 
   const bottom = top + n - 1;
   sh.getRange(3, 2, 1, 7).merge().setFormula(X_(
@@ -2347,8 +2468,8 @@ function importFromSpreadsheet_(sourceId) {
     Name: n, Total: planBy.reg[n] || '', Share: 1, Freq: REF.freq[0][0], Group: cats.reg[n].group || 'Потреби',
     Day: /аванс/i.test(srcBy[n] || '') ? IMPORT.avansDay : 1,
   }));
-  subs.forEach(s => regRows.push({ Name: s.name, Total: s.amount, Share: 1, Freq: REF.freq[0][0], Group: 'Бажання', Sub: true, Use: true }));
   setBlockRows_(ss, 'Reg', regRows.slice(0, regCap));
+  setBlockRows_(ss, 'Subs', subs.slice(0, 12).map(s => ({ Name: s.name, Total: s.amount, Freq: REF.freq[0][0], Use: true })));
   setBlockRows_(ss, 'Var', Object.keys(cats.var).map(n => ({ Name: n, Budget: planBy.var[n] || '', Group: cats.var[n].group || 'Бажання' })));
   const firstSeen = {};
   months.forEach(mo => mo.expenses.forEach(e => {
@@ -2384,11 +2505,12 @@ function importFromSpreadsheet_(sourceId) {
   writeOpsRows_(opsSh, 2, out);
   ss.getRangeByName(NR + 'D_Period').setValue(REF.current);
   SpreadsheetApp.flush();
+  syncCategoriesFromOps_(ss);
 
   const debtsNoLeft = Object.keys(cats.debt).filter(k => planBy.debt[k]);
   const msg = 'Імпортовано ' + ops.length + ' операцій за ' + REF.months[history[0] ? history[0].m : plan.m] + '–' +
     REF.months[history.length ? history[history.length - 1].m : plan.m] + '. План «' + REF.months[plan.m] +
-    '» — у «Налаштуваннях» (дохід, регулярні, бюджети, борги' + (subs.length ? ', ' + subs.length + ' підписок' : '') + ').\n\n' +
+    '» — у «Налаштуваннях» (дохід, регулярні, бюджети, борги' + (subs.length ? ', ' + subs.length + ' підписок у блоці «Підписки»' : '') + ').\n\n' +
     'Що дописати руками:\n' +
     (debtsNoLeft.length ? '• залишок боргів (' + debtsNoLeft.join(', ') + ') — «Налаштування → Борги», колонка «Початковий залишок»;\n' : '') +
     '• фактичні операції за ' + REF.months[plan.m] + ' (зарплата, оплати) — в «Операції» або через форму;\n' +
@@ -2523,6 +2645,7 @@ function tourFocus(key) {
   let rng = null;
   if (key === 'income') rng = block('Inc');
   else if (key === 'regular') rng = block('Reg');
+  else if (key === 'subs') rng = block('Subs');
   else if (key === 'variable') rng = block('Var');
   else if (key === 'debts') rng = block('Debt');
   else if (key === 'ops') {
@@ -2574,11 +2697,13 @@ function quizSubmit(p, mode, apply) {
     half: !!x.half, debt: !!x.debt, sub: !!x.sub })).filter(x => x.name);
   const variable = (p.variable || []).map(x => ({ name: clean(x.name), budget: num(x.budget), need: !!x.need }))
     .filter(x => x.name).slice(0, 12);
+  const subs = (p.subs || []).map(x => ({ name: clean(x.name), amount: num(x.amount) })).filter(x => x.name).slice(0, 12);
+  const rule = RULES.some(r => r.name === p.rule) ? p.rule : '';
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const prof = Object.assign({}, profile_(), {
     name: name, gender: gender, age: age, asOf: todayIso_(ss),
-    income: income, regular: regular, variable: variable, floating: !!(p && p.floating),
+    income: income, regular: regular, variable: variable, subs: subs, rule: rule, floating: !!(p && p.floating),
   });
   PropertiesService.getDocumentProperties().setProperty(PROP_PROFILE, JSON.stringify(prof));
   PROFILE_ = prof;
@@ -2600,22 +2725,116 @@ function quizSubmit(p, mode, apply) {
 /** Відповіді квізу → блоки «Налаштувань». */
 function applyQuizSettings_(ss, p) {
   if (!ss.getRangeByName(NR + 'Inc_Name')) return;
+  const used = usedCategories_(ss);
   if (p.income && p.income.length) {
-    setBlockRows_(ss, 'Inc', p.income.map(x => ({ Name: x.name, Main: x.main, Exp: x.amount, Day: x.day })));
+    mergeBlockRows_(ss, 'Inc', p.income.map(x => ({ Name: x.name, Main: x.main, Exp: x.amount, Day: x.day })), used, true);
   }
-  const reg = (p.regular || []).filter(x => !x.debt);
+  const reg = (p.regular || []).filter(x => !x.debt && !x.sub);
   const debts = (p.regular || []).filter(x => x.debt);
-  if (p.regular && p.regular.length) {
-    setBlockRows_(ss, 'Reg', reg.slice(0, 15).map(x => ({
-      Name: x.name, Total: x.amount, Share: x.half ? 0.5 : 1, Freq: REF.freq[0][0], Day: x.day,
-      Group: x.sub ? REF.groups[1] : REF.groups[0], Sub: x.sub, Use: x.sub,
-    })));
-    setBlockRows_(ss, 'Debt', debts.slice(0, 8).map(x => ({ Name: x.name, Pay: x.amount, Freq: REF.freq[0][0] })));
+  const subs = (p.subs || []).concat((p.regular || []).filter(x => x.sub && !(p.subs || []).length));
+  if (reg.length) {
+    mergeBlockRows_(ss, 'Reg', reg.map(x => ({
+      Name: x.name, Total: x.amount, Share: x.half ? 0.5 : 1, Freq: REF.freq[0][0], Day: x.day, Group: REF.groups[0],
+    })), used);
+  }
+  if (debts.length) mergeBlockRows_(ss, 'Debt', debts.map(x => ({ Name: x.name, Pay: x.amount, Freq: REF.freq[0][0] })), used);
+  if (subs.length && ss.getRangeByName(NR + 'Subs_Name')) {
+    mergeBlockRows_(ss, 'Subs', subs.map(x => ({ Name: x.name, Total: x.amount, Freq: REF.freq[0][0], Day: x.day, Use: true })), used);
   }
   if (p.variable && p.variable.length) {
-    setBlockRows_(ss, 'Var', p.variable.map(x => ({ Name: x.name, Budget: x.budget, Group: x.need ? REF.groups[0] : REF.groups[1] })));
+    mergeBlockRows_(ss, 'Var', p.variable.map(x => ({ Name: x.name, Budget: x.budget, Group: x.need ? REF.groups[0] : REF.groups[1] })), used);
   }
+  if (p.rule && ss.getRangeByName(NR + 'Rule')) applyRule_(ss, p.rule);
   SpreadsheetApp.flush();
+  syncCategoriesFromOps_(ss);
+}
+
+/** Усі категорії, що вже трапляються в «Операціях» (нижній регістр). */
+function usedCategories_(ss) {
+  const set = {};
+  try { opsRows_(ss).forEach(o => { if (o.category) set[String(o.category).toLowerCase()] = true; }); } catch (e) { /* немає операцій */ }
+  return set;
+}
+
+/**
+ * Обʼєднує нові рядки з наявними в блоці «Налаштувань»:
+ * однакова назва — оновлюємо заповнені поля; нова — додаємо; старі рядки лишаються,
+ * якщо в них є суми/дати або категорія вже трапляється в «Операціях». Порожні «шаблонні» — прибираються.
+ * singleMain — для блоку доходу: галочка «Основне» лише в одного.
+ */
+function mergeBlockRows_(ss, key, rows, used, singleMain) {
+  const block = SETTINGS_BLOCKS.filter(b => b.key === key)[0];
+  if (!block || !ss.getRangeByName(NR + key + '_Name')) return;
+  const inputs = block.cols.filter(c => c.t !== 'f');
+  const data = {};
+  inputs.forEach(c => { data[c.key] = ss.getRangeByName(NR + key + '_' + c.key).getValues().map(v => v[0]); });
+  const isData = t => ['money', 'int', 'day', 'date'].indexOf(t) !== -1;
+  let cur = [];
+  for (let i = 0; i < block.rows; i++) {
+    const name = String(data.Name[i] || '').trim();
+    if (!name) continue;
+    const o = {};
+    inputs.forEach(c => { o[c.key] = data[c.key][i]; });
+    const hasData = inputs.some(c => isData(c.t) && o[c.key] !== '' && o[c.key] !== null);
+    if (hasData || used[name.toLowerCase()]) cur.push(o);
+  }
+  rows.forEach(r => {
+    const hit = cur.filter(o => String(o.Name).toLowerCase() === String(r.Name).toLowerCase())[0];
+    const clean = {};
+    Object.keys(r).forEach(k => { if (r[k] !== undefined && r[k] !== '') clean[k] = r[k]; });
+    if (hit) Object.assign(hit, clean); else cur.push(Object.assign({}, r));
+  });
+  if (singleMain && rows.some(r => r.Main)) {
+    const mainName = String(rows.filter(r => r.Main)[0].Name).toLowerCase();
+    cur.forEach(o => { o.Main = String(o.Name).toLowerCase() === mainName; });
+  }
+  setBlockRows_(ss, key, cur.slice(0, block.rows));
+}
+
+/**
+ * Кожна категорія з «Операцій», якої немає в «Налаштуваннях», додається у відповідний блок
+ * (без сум), щоб операції не ставали «невідомими». Повертає список доданих.
+ */
+function syncCategoriesFromOps_(ss) {
+  if (!ss.getRangeByName(NR + 'Inc_Name')) return [];
+  const names = key => {
+    const r = ss.getRangeByName(NR + key + '_Name');
+    return r ? r.getValues().map(v => String(v[0]).trim().toLowerCase()).filter(String) : [];
+  };
+  const known = {};
+  known[TYPES.income] = names('Inc');
+  known[TYPES.expense] = names('Reg').concat(names('Var'), names('Subs'));
+  known[TYPES.debt] = names('Debt');
+  known[TYPES.saving] = names('Sav');
+  const target = {};
+  target[TYPES.income] = 'Inc'; target[TYPES.expense] = 'Var'; target[TYPES.debt] = 'Debt'; target[TYPES.saving] = 'Sav';
+  const added = [], noRoom = [];
+  let ops = [];
+  try { ops = opsRows_(ss); } catch (e) { ops = []; }
+  ops.forEach(o => {
+    const cat = String(o.category || '').trim();
+    if (!cat || !known[o.type]) return;
+    if (known[o.type].indexOf(cat.toLowerCase()) !== -1) return;
+    const key = target[o.type];
+    const row = key === 'Var' ? { Name: cat, Group: REF.groups[1] } : key === 'Debt' ? { Name: cat, Freq: REF.freq[0][0] } : { Name: cat };
+    if (appendBlockRow_(ss, key, row)) { added.push(cat); known[o.type].push(cat.toLowerCase()); }
+    else if (noRoom.indexOf(cat) === -1) noRoom.push(cat);
+  });
+  if (added.length) SpreadsheetApp.flush();
+  syncCategoriesFromOps_.noRoom = noRoom;
+  return added;
+}
+
+/** Меню: повернути в «Налаштування» категорії, що трапляються в «Операціях». */
+function repairCategories() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const added = syncCategoriesFromOps_(ss);
+  const noRoom = syncCategoriesFromOps_.noRoom || [];
+  ss.toast(added.length
+    ? 'Повернуто категорій: ' + added.length + ' (' + added.join(', ') + '). Можеш поставити їм бюджети в «Налаштуваннях».'
+    : 'Усі категорії з «Операцій» уже є в «Налаштуваннях» ✓', menuTitle_(), 10);
+  if (noRoom.length) ss.toast('Не вмістилися (блок заповнений): ' + noRoom.join(', ') + '. Обʼєднай схожі категорії.', menuTitle_(), 10);
+  return added;
 }
 
 /** Чи є в трекері вже щось своє (тоді квіз питає, чи замінювати налаштування). */
@@ -2626,7 +2845,7 @@ function trackerHasData_() {
     return r ? r.getValues().some(v => v[0] !== '' && v[0] !== null) : false;
   };
   const opsSh = ss.getSheetByName(SHEETS.ops);
-  return any('Inc_Exp') || any('Reg_Total') || any('Var_Budget') || any('Debt_Pay') ||
+  return any('Inc_Exp') || any('Reg_Total') || any('Subs_Total') || any('Var_Budget') || any('Debt_Pay') ||
     (opsSh ? firstFreeOpsRow_(opsSh) > 2 : false);
 }
 
@@ -2682,7 +2901,8 @@ function cleanTrackerCopy_(c) {
   if (c.getRangeByName(NR + 'Inc_Name')) {
     SETTINGS_BLOCKS.forEach(b => setBlockRows_(c, b.key, SEEDS[b.key] || []));
     const t = todayParts_(c);
-    setKV_(c, { Year: t.y, Start: isoDate_(t.y, t.m, 1), Calc: '', Cycle: REF.cycle[0], Warn: 0.8, Over: 1, Needs: 0.5, Wants: 0.3, Save: 0.2 });
+    setKV_(c, { Year: t.y, Start: isoDate_(t.y, t.m, 1), Calc: '', Cycle: REF.cycle[0], Warn: 0.8, Over: 1 });
+    applyRule_(c, RULES[0].name);
   }
   const lists = c.getSheetByName(SHEETS.lists);
   if (lists) PROFILE_FIELDS.forEach((f, i) => lists.getRange(2 + i, 19).setValue(''));
@@ -2771,11 +2991,12 @@ function quizHtml_() {
   const p = profile_();
   const data = {
     themes: THEMES,
+    rules: RULES.map(r => ({ name: r.name, title: r.title, about: r.about, tag: r.tag || '', buckets: r.buckets.map(b => [b[0], b[1]]) })),
     hasData: (() => { try { return trackerHasData_(); } catch (e) { return false; } })(),
     profile: {
       name: p.name || '', gender: p.gender || '', age: p.age || 30, floating: !!p.floating,
       income: p.income || [], regular: (p.regular || []).map(x => Object.assign({ key: 'r' + Math.random(), e: '📌' }, x)),
-      variable: p.variable || [],
+      variable: p.variable || [], subs: p.subs || [], rule: p.rule || '',
     },
   };
   return QUIZ_HTML.replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c'));
@@ -2856,6 +3077,17 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
   .det .nm { flex:1; min-width:120px; padding:9px 12px; font-size:15px; }
   .hint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.4; }
   /* підсумок */
+  .rule { border:2px solid var(--line); border-radius:16px; padding:12px 14px; margin-bottom:10px; cursor:pointer; }
+  .rule.sel { border-color:var(--p); box-shadow:0 0 0 3px var(--bg); }
+  .rule .rt { display:flex; justify-content:space-between; align-items:center; font-weight:800; color:var(--t); font-size:15px; }
+  .rule .tag { font-size:11px; font-weight:700; color:#fff; background:var(--p); border-radius:8px; padding:2px 7px; }
+  .rule .ra { font-size:13px; color:var(--ink); margin:4px 0 6px; line-height:1.45; }
+  .rule .rx { display:flex; flex-wrap:wrap; gap:6px; }
+  .rule .rx span { font-size:12px; background:var(--bg); color:var(--t); border-radius:8px; padding:3px 8px; font-weight:600; }
+  .subs { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0 8px; }
+  .subs .chip { padding:6px 10px; font-size:12.5px; }
+  .sr { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+  .sr b { flex:1; font-size:14px; }
   .blk { border-radius:16px; background:var(--bg); padding:10px 14px; margin-bottom:10px; cursor:pointer; }
   .blk .bh { display:flex; justify-content:space-between; font-weight:700; color:var(--t); font-size:14px; }
   .blk .bh em { font-style:normal; color:var(--p); font-size:12.5px; }
@@ -2876,7 +3108,7 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
   <section class="screen mid on" id="s0">
     <div class="emoji">👋</div>
     <h1>Привіт! Давай познайомимось</h1>
-    <p class="sub">6 коротких питань — і я одразу заповню перший варіант трекера: кольори, звертання, твій дохід і основні витрати. Відповіді можна змінити будь-коли.</p>
+    <p class="sub">7 коротких питань — і я одразу заповню перший варіант трекера: кольори, звертання, твій дохід і основні витрати. Відповіді можна змінити будь-коли.</p>
     <div class="foot"><button class="btn main" onclick="go(1)">Почати</button></div>
   </section>
 
@@ -2949,9 +3181,19 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
 
   <section class="screen" id="s7">
     <div class="body">
+      <div class="emoji">🧮</div>
+      <h1>Як хочеш розподіляти гроші?</h1>
+      <p class="sub">Обери правило — трекер покаже, чи вкладаєшся в нього. Змінити можна будь-коли в «Налаштуваннях».</p>
+      <div id="rules"></div>
+    </div>
+    <div class="foot"><button class="btn ghost" onclick="go(6)">← Назад</button><button class="btn main" onclick="next7()">Далі</button></div>
+  </section>
+
+  <section class="screen" id="s8">
+    <div class="body">
       <div class="emoji">🎉</div>
-      <h1 id="h7">Готово!</h1>
-      <p class="sub" id="p7">Перевір — натисни на блок, щоб змінити.</p>
+      <h1 id="h8">Готово!</h1>
+      <p class="sub" id="p8">Перевір — натисни на блок, щоб змінити.</p>
       <div id="sum"></div>
     </div>
     <div id="replaceBox" style="display:none">
@@ -2961,16 +3203,16 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     <button class="link" onclick="send('save')">Лише зберегти, без перебудови</button>
   </section>
 
-  <section class="screen mid center" id="s8">
+  <section class="screen mid center" id="s9">
     <div class="spin"></div>
-    <h1 id="h8">Будую твій трекер…</h1>
-    <p class="sub" id="p8">Це до хвилини — можеш поки зробити чай ☕</p>
+    <h1 id="h9">Будую твій трекер…</h1>
+    <p class="sub" id="p9">Це до хвилини — можеш поки зробити чай ☕</p>
   </section>
 
-  <section class="screen mid center" id="s9">
-    <div class="emoji" id="em9">✅</div>
-    <h1 id="h9">Готово!</h1>
-    <p class="sub" id="p9"></p>
+  <section class="screen mid center" id="s10">
+    <div class="emoji" id="em10">✅</div>
+    <h1 id="h10">Готово!</h1>
+    <p class="sub" id="p10"></p>
     <div class="foot" style="width:100%"><button class="btn main" onclick="openGuide()">Як користуватись →</button></div>
     <button class="link" id="closeLink" onclick="closeMe()">Закрити</button>
   </section>
@@ -2984,7 +3226,10 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     floating: !!P.floating,
     regular: P.regular || [],
     variable: (P.variable && P.variable.length) ? P.variable : [{ name: 'Їжа', budget: '', need: true }, { name: 'Транспорт', budget: '', need: true }],
+    subs: P.subs || [],
+    rule: P.rule || (D.rules[0] && D.rules[0].name),
   };
+  const POPULAR = ['Netflix', 'YouTube Premium', 'Spotify', 'Apple Music', 'iCloud+', 'Google One', 'Megogo', 'Sweet.tv', 'ChatGPT', 'Claude', 'Telegram Premium'];
   const REG = [
     { key: 'rent', e: '🏠', name: 'Оренда / іпотека', half: true },
     { key: 'util', e: '💡', name: 'Комуналка' },
@@ -3001,7 +3246,7 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     ['⚽', 'Спорт і хобі', 0], ['🚗', 'Авто', 1], ['💊', 'Аптека', 1],
   ];
   let cur = 0;
-  const TOTAL = 6;
+  const TOTAL = 7;
   const $ = id => document.getElementById(id);
   const G = (f, m) => st.gender === 'm' ? m : f;
   const yw = n => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? 'рік' : (a >= 2 && a <= 4 && (b < 12 || b > 14) ? 'роки' : 'років'); };
@@ -3037,7 +3282,8 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     if (n === 4) renderSrc();
     if (n === 5) renderReg();
     if (n === 6) renderVar();
-    if (n === 7) summary();
+    if (n === 7) renderRules();
+    if (n === 8) summary();
   }
 
   // 1–3
@@ -3091,13 +3337,25 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     $('regDet').innerHTML = st.regular.map((x, i) =>
       '<div class="det"><div class="h">' + (x.own ? '<input type="text" class="nm" placeholder="Назва платежу" value="' + esc(x.name) + '" oninput="st.regular[' + i + '].name=this.value">' : '<span>' + x.e + ' ' + esc(x.name) + '</span>') +
       '<button class="icon" onclick="delReg(' + i + ')">✕</button></div>' +
-      '<div class="r"><input class="money" inputmode="decimal" placeholder="' + (x.debt ? 'платіж на місяць' : 'сума на місяць') + '" value="' + esc(x.amount) + '" oninput="st.regular[' + i + '].amount=this.value">' +
-      '<select onchange="st.regular[' + i + '].day=this.value">' + dayOptions(x.day, false) + '</select></div>' +
+      (x.sub ? '' : '<div class="r"><input class="money" inputmode="decimal" placeholder="' + (x.debt ? 'платіж на місяць' : 'сума на місяць') + '" value="' + esc(x.amount) + '" oninput="st.regular[' + i + '].amount=this.value">' +
+      '<select onchange="st.regular[' + i + '].day=this.value">' + dayOptions(x.day, false) + '</select></div>') +
       (x.key === 'rent' ? '<label class="check"><input type="checkbox"' + (x.half ? ' checked' : '') + ' onchange="st.regular[' + i + '].half=this.checked"> Ділю навпіл (моя частка 50%) — впиши повну суму</label>' : '') +
       (x.debt ? '<div class="hint">Піде в «Борги». Залишок боргу допишеш у «Налаштуваннях» — тоді покажу, коли закриєш.</div>' : '') +
-      (x.sub ? '<div class="hint">Загальна сума всіх підписок. Поштучно можна розписати потім у «Налаштуваннях».</div>' : '') +
+      (x.sub ? renderSubs() : '') +
       '</div>').join('');
   }
+  function renderSubs() {
+    const has = n => st.subs.some(x => x.name === n);
+    return '<div class="hint">Обери свої підписки й впиши суму за місяць:</div><div class="subs">' +
+      POPULAR.map(n => '<span class="chip' + (has(n) ? ' sel' : '') + '" onclick="togSub(&quot;' + n + '&quot;)">' + n + '</span>').join('') +
+      '<span class="chip add" onclick="addOwnSub()">+ Своя</span></div>' +
+      st.subs.map((x, k) => '<div class="sr">' + (x.own ? '<input type="text" class="nm" placeholder="Назва" value="' + esc(x.name) + '" oninput="st.subs[' + k + '].name=this.value">' : '<b>' + esc(x.name) + '</b>') +
+        '<input class="money" inputmode="decimal" placeholder="грн / міс" value="' + esc(x.amount) + '" oninput="st.subs[' + k + '].amount=this.value">' +
+        '<button class="icon" onclick="delSub(' + k + ')">✕</button></div>').join('');
+  }
+  function togSub(n) { const k = st.subs.findIndex(x => x.name === n); if (k >= 0) st.subs.splice(k, 1); else st.subs.push({ name: n, amount: '' }); renderReg(); }
+  function addOwnSub() { st.subs.push({ name: '', amount: '', own: true }); renderReg(); }
+  function delSub(k) { st.subs.splice(k, 1); renderReg(); }
   function togReg(key) {
     const r = REG.filter(x => x.key === key)[0];
     const i = st.regular.findIndex(x => x.key === key);
@@ -3107,7 +3365,12 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
   }
   function addOwnReg() { st.regular.push({ key: 'own' + Date.now(), e: '📌', name: '', own: true, amount: '', day: '', half: false, debt: false, sub: false }); renderReg(); }
   function delReg(i) { st.regular.splice(i, 1); renderReg(); }
-  function next5() { st.regular = st.regular.filter(x => String(x.name).trim()); go(6); }
+  function next5() {
+    st.regular = st.regular.filter(x => String(x.name).trim());
+    st.subs = st.subs.filter(x => String(x.name).trim());
+    if (!st.regular.some(x => x.sub)) st.subs = [];
+    go(6);
+  }
 
   // 6. Щоденні
   function findVar(n) { return st.variable.filter(x => x.name === n)[0]; }
@@ -3128,20 +3391,38 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
   function addOwnVar() { if (st.variable.length < 12) { st.variable.push({ name: '', budget: '', need: false, own: true }); renderVar(); } }
   function delVar(i) { st.variable.splice(i, 1); renderVar(); }
   function next6() { st.variable = st.variable.filter(x => String(x.name).trim()); go(7); }
+  function next7() { go(8); }
 
-  // 7. Підсумок
+  // 7. Правило розподілу
+  function incomeTotal() { return st.income.reduce((a, s) => a + (money(s.amount) || 0), 0); }
+  function renderRules() {
+    const inc = incomeTotal() || 40000;
+    $('rules').innerHTML = D.rules.map(r =>
+      '<div class="rule' + (st.rule === r.name ? ' sel' : '') + '" onclick="pickRule(&quot;' + esc(r.name) + '&quot;)">' +
+      '<div class="rt"><span>' + esc(r.title) + '</span>' + (r.tag ? '<span class="tag">' + esc(r.tag) + '</span>' : '') + '</div>' +
+      '<div class="ra">' + esc(r.about) + '</div>' +
+      (r.buckets.length ? '<div class="rx">' + r.buckets.map(b => '<span>' + esc(b[0]) + ' ' + Math.round(b[1] * 100) + '% · ' + fmt(inc * b[1]) + '</span>').join('') + '</div>' : '') +
+      '</div>').join('') +
+      '<div class="hint">Суми — приклад на ' + (incomeTotal() ? 'твоєму доході ' + fmt(inc) : 'доході 40 000 грн') + ' на місяць.</div>';
+  }
+  function pickRule(n) { st.rule = n; renderRules(); }
+
+  // 8. Підсумок
   function summary() {
-    $('h7').textContent = 'Готово, ' + st.name + '!';
-    $('p7').textContent = G('Ти готова? ', 'Ти готовий? ') + 'Перевір — натисни на блок, щоб змінити.';
+    $('h8').textContent = 'Готово, ' + st.name + '!';
+    $('p8').textContent = G('Ти готова? ', 'Ти готовий? ') + 'Перевір — натисни на блок, щоб змінити.';
     const inc = st.income.map(s => (s.main ? '★ ' : '') + esc(s.name) + (money(s.amount) ? ' — ' + fmt(money(s.amount)) : '') + (s.day ? ', ' + s.day + '-го' : ', нерегулярно')).join('<br>');
-    const reg = st.regular.length ? st.regular.map(x => esc(x.name) + (money(x.amount) ? ' — ' + fmt(money(x.amount)) + (x.half ? ' (моя частка 50%)' : '') : '') + (x.day ? ', ' + x.day + '-го' : '')).join('<br>') : 'не вказано — допишеш потім';
+    const regList = st.regular.filter(x => !x.sub);
+    const reg = (regList.length ? regList.map(x => esc(x.name) + (money(x.amount) ? ' — ' + fmt(money(x.amount)) + (x.half ? ' (моя частка 50%)' : '') : '') + (x.day ? ', ' + x.day + '-го' : '')).join('<br>') : 'не вказано — допишеш потім') +
+      (st.subs.length ? '<br>Підписки: ' + st.subs.map(x => esc(x.name) + (money(x.amount) ? ' ' + fmt(money(x.amount)) : '')).join(', ') : '');
     const vr = st.variable.length ? st.variable.map(x => esc(x.name) + (money(x.budget) ? ' — ' + fmt(money(x.budget)) : '')).join(', ') : 'не вказано';
     const blk = (step, title, body) => '<div class="blk" onclick="go(' + step + ')"><div class="bh">' + title + '<em>змінити</em></div><div class="bb">' + body + '</div></div>';
     $('sum').innerHTML =
       blk(1, 'Про тебе', esc(st.name) + ' · ' + (st.gender === 'm' ? '👨 чоловік' : '👩 жінка') + ' · ' + st.age + ' ' + yw(st.age)) +
       blk(4, 'Дохід' + (st.floating ? ' (сума плаває)' : ''), inc) +
       blk(5, 'Обовʼязкові платежі', reg) +
-      blk(6, 'Щоденні витрати', vr);
+      blk(6, 'Щоденні витрати', vr) +
+      blk(7, 'Правило розподілу', esc((D.rules.filter(r => r.name === st.rule)[0] || {}).title || st.rule));
     $('replaceBox').style.display = D.hasData ? 'block' : 'none';
   }
 
@@ -3149,25 +3430,27 @@ const QUIZ_HTML = String.raw`<!DOCTYPE html>
     return {
       name: st.name, gender: st.gender, age: st.age, floating: st.floating,
       income: st.income.map(s => ({ name: s.name, amount: money(s.amount), day: s.day, main: s.main })),
-      regular: st.regular.map(x => ({ name: x.name, amount: money(x.amount), day: x.day, half: x.half, debt: x.debt, sub: x.sub })),
+      regular: st.regular.filter(x => !x.sub).map(x => ({ name: x.name, amount: money(x.amount), day: x.day, half: x.half, debt: x.debt })),
+      subs: st.subs.map(x => ({ name: x.name, amount: money(x.amount) })),
+      rule: st.rule,
       variable: st.variable.map(x => ({ name: x.name, budget: money(x.budget), need: x.need })),
     };
   }
   function send(mode) {
     const apply = D.hasData ? $('replace').checked : true;
-    go(8);
-    $('h8').textContent = mode === 'build' ? 'Будую твій трекер…' : 'Зберігаю…';
-    $('p8').textContent = mode === 'build' ? 'Це до хвилини — можеш поки зробити чай ☕' : 'Секунду.';
+    go(9);
+    $('h9').textContent = mode === 'build' ? 'Будую твій трекер…' : 'Зберігаю…';
+    $('p9').textContent = mode === 'build' ? 'Це до хвилини — можеш поки зробити чай ☕' : 'Секунду.';
     google.script.run
       .withSuccessHandler(r => {
-        $('em9').textContent = '✅';
-        $('h9').textContent = r === 'built' ? 'Трекер готовий, ' + st.name + '!' : 'Збережено!';
-        $('p9').textContent = 'Покажу, де що лежить і як цим користуватись — інструкція відкриється збоку, а таблиця залишиться під рукою.';
+        $('em10').textContent = '✅';
+        $('h10').textContent = r === 'built' ? 'Трекер готовий, ' + st.name + '!' : 'Збережено!';
+        $('p10').textContent = 'Покажу, де що лежить і як цим користуватись — інструкція відкриється збоку, а таблиця залишиться під рукою.';
         $('closeLink').textContent = 'Закрити — розберусь ' + G('сама', 'сам');
-        go(9);
+        go(10);
       })
       .withFailureHandler(e => {
-        $('em9').textContent = '😕'; $('h9').textContent = 'Щось пішло не так'; $('p9').textContent = (e && e.message) || String(e); go(9);
+        $('em10').textContent = '😕'; $('h10').textContent = 'Щось пішло не так'; $('p10').textContent = (e && e.message) || String(e); go(10);
       })
       .quizSubmit(payload(), mode, apply);
   }
@@ -3211,9 +3494,12 @@ const GUIDE_HTML = String.raw`<!DOCTYPE html>
   .here { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--p); font-weight:700; margin:0 0 8px; }
   .chips { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 8px; }
   .chip { font-size:11.5px; font-weight:700; border-radius:9px; padding:5px 8px; }
-  table.cols { width:100%; border-collapse:collapse; font-size:12.5px; margin:0 0 10px; }
-  table.cols td { border-bottom:1px solid #EEF1F4; padding:6px 4px; vertical-align:top; line-height:1.4; }
-  table.cols td:first-child { font-weight:700; color:var(--t); white-space:nowrap; padding-right:8px; }
+  /* «термін — пояснення»: у вузькій панелі один під одним */
+  table.cols, table.cols tbody, table.cols tr, table.cols td { display:block; width:100%; }
+  table.cols { font-size:13.5px; margin:0 0 10px; }
+  table.cols tr { border-bottom:1px solid #EEF1F4; padding:7px 0; }
+  table.cols td { padding:0; line-height:1.45; }
+  table.cols td:first-child { font-weight:700; color:var(--t); margin-bottom:2px; }
   .btn { border:none; border-radius:12px; padding:12px; font:700 14px Montserrat, Arial; cursor:pointer; }
   .btn.main { background:var(--p); color:#fff; }
   .btn.soft { background:var(--bg); color:var(--t); width:100%; margin:4px 0 8px; }
@@ -3295,13 +3581,15 @@ __QRLIB__
       '<tr><td>Моя частка</td><td>яку частину платиш ти. Ділиш навпіл → 50%, і «Моя сума» стане 15 000.</td></tr>' +
       '<tr><td>Як часто</td><td>щомісяця / раз на квартал / раз на рік.</td></tr>' +
       '<tr><td>День оплати</td><td>число місяця — щоб трекер знав, чи платіж уже мав бути.</td></tr>' +
-      '<tr><td>Підписка ☑</td><td>познач Netflix, Spotify тощо — вони потраплять на вкладку «Підписки».</td></tr></table>' },
+      '<tr><td>Група</td><td>«Потреби» — без цього не обійтись (оренда, комуналка), «Бажання» — можна відмовитись.</td></tr></table>' +
+      '<p><b>Підписки</b> (Netflix, Spotify, iCloud…) — в окремому блоці «Підписки» нижче: сума, як часто, день списання і «Користуюсь». ' +
+      'Якщо зняти «Користуюсь», трекер покаже, скільки можна звільнити за рік.</p>' },
 
     { focus: 'variable', render: () =>
       '<div class="emoji">🛒</div><h1>Щоденні витрати</h1>' +
       '<div class="here">👉 Блок «Змінні витрати» підсвічено</div>' +
       '<p>Те, на що гроші йдуть щодня: їжа, транспорт, кафе, краса. Для кожної категорії можна поставити <b>місячний бюджет</b> — ліміт, скільки хочеш на неї витрачати.</p>' +
-      '<div class="ex">Бюджет на «Їжа» — <b>7 000 грн</b>. Витратила 5 600 → на «Дашборді» смужка 80% стане жовтою, понад 7 000 — червоною.</div>' },
+      '<div class="ex">Бюджет на «Їжа» — <b>7 000 грн</b>. ' + G('Витратила', 'Витратив') + ' 5 600 → на «Дашборді» смужка 80% стане жовтою, понад 7 000 — червоною.</div>' },
 
     { focus: 'debts', render: () =>
       '<div class="emoji">💳</div><h1>Борги, цілі, рахунки</h1>' +
@@ -3517,11 +3805,13 @@ function statementRowsFromSheet(url) {
 function statementPreview(rows) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const head = findStatementHeader_(rows);
-  if (!head) throw new Error('Не знайшла колонок «Дата» і «Сума». Перевір, що це виписка з заголовками.');
+  if (!head) throw new Error('Не знайшов колонок «Дата» і «Сума». Перевір, що це виписка з заголовками.');
   const lists = {};
   Object.keys(TYPE_LIST).forEach(t => { lists[t] = listValues_(ss, TYPE_LIST[t]); });
   const rules = statementRules_();
   const existing = existingStatementKeys_(ss);
+  const subsR = ss.getRangeByName(NR + 'Subs_Name');
+  lists.subs = subsR ? subsR.getValues().map(v => v[0]).filter(String) : [];
 
   const items = [];
   for (let r = head.row + 1; r < rows.length; r++) {
@@ -3586,6 +3876,7 @@ function statementImport(items, account) {
     writeOpsRows_(sh, first, rows);
   }
   SpreadsheetApp.flush();
+  syncCategoriesFromOps_(ss);
   return { added: rows.length, created: created };
 }
 
@@ -3668,6 +3959,8 @@ function classifyStmtItem_(it, rules, lists) {
       ? lists[TYPES.income].filter(n => /зарплат/i.test(n))[0] : stmtCategory_('incOther', lists[TYPES.income]);
   } else {
     it.type = TYPES.expense;
+    const sub = (lists.subs || []).filter(n => n && d.toLowerCase().indexOf(String(n).toLowerCase()) !== -1)[0];
+    if (sub) { it.category = sub; if (learned && it.include) { it.type = learned[0]; it.category = learned[1]; it.learned = true; } return; }
     let code = '';
     STMT.keywords.some(k => { if (k[0].test(d)) { code = k[1]; return true; } return false; });
     if (!code && it.mcc) STMT.mcc.some(m => { if (m[0].indexOf(Number(it.mcc)) !== -1) { code = m[1]; return true; } return false; });
