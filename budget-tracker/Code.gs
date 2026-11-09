@@ -781,10 +781,10 @@ function sumCycle_(type, cat) {
 function dueDateLet_(dayExpr, freqExpr, monthExpr, minDateExpr) {
   const okMin = minDateExpr ? ',d>=' + minDateExpr : '';
   return 'LET(st,@C_Start,en,@C_End,g,' + dayExpr + ',k,IFERROR(VLOOKUP(' + freqExpr + ',@L_Freq,2,FALSE),1),f,' + monthExpr + ',' +
-    'd1,DATE(YEAR(st),MONTH(st),MIN(g,DAY(EOMONTH(st,0)))),' +
-    'd2,DATE(YEAR(en),MONTH(en),MIN(g,DAY(EOMONTH(en,0)))),' +
-    'IF(AND(d1>=st,d1<=en,MOD(MONTH(d1)-f,k)=0' + okMin.replace(/d>=/, 'd1>=') + '),d1,' +
-    'IF(AND(d2>=st,d2<=en,MOD(MONTH(d2)-f,k)=0' + okMin.replace(/d>=/, 'd2>=') + '),d2,"")))';
+    'pa,DATE(YEAR(st),MONTH(st),MIN(g,DAY(EOMONTH(st,0)))),' +
+    'pb,DATE(YEAR(en),MONTH(en),MIN(g,DAY(EOMONTH(en,0)))),' +
+    'IF(AND(pa>=st,pa<=en,MOD(MONTH(pa)-f,k)=0' + okMin.replace(/d>=/, 'pa>=') + '),pa,' +
+    'IF(AND(pb>=st,pb<=en,MOD(MONTH(pb)-f,k)=0' + okMin.replace(/d>=/, 'pb>=') + '),pb,"")))';
 }
 
 function buildDashboard_(ss, sh) {
@@ -970,13 +970,13 @@ function dashHelpers_() {
 /** Рядки «як рахується цифра». Останній — сама велика цифра. */
 function dashCalcLines_(colRange) {
   return [
-    { key: 'D_Income', label: '+ Дохід за цикл', f: '=' + sumCycle_(TYPES.income) },
+    { key: 'D_Income', label: 'Дохід за цикл (+)', f: '=' + sumCycle_(TYPES.income) },
     { key: 'D_Spent', label: '− Уже витрачено (усі операції циклу)',
       f: '=' + sumCycle_(TYPES.expense) + '+' + sumCycle_(TYPES.debt) + '+' + sumCycle_(TYPES.saving) },
     { key: 'D_RegLeft', label: '− Ще сплатити: регулярні', f: '=SUM(' + colRange('reg', 'H') + ')' },
     { key: 'D_DebtLeft', label: '− Ще сплатити: борги', f: '=SUM(' + colRange('debt', 'E') + ')' },
     { key: 'D_SavLeft', label: '− Ще відкласти', f: '=SUM(' + colRange('sav', 'E') + ')' },
-    { key: 'D_Free', label: '= Можу витратити до наступної виплати', bold: true,
+    { key: 'D_Free', label: 'Підсумок: можу витратити до наступної виплати', bold: true,
       f: '=@D_Income-@D_Spent-@D_RegLeft-@D_DebtLeft-@D_SavLeft' },
   ];
 }
@@ -1043,8 +1043,8 @@ function dashBlocks_() {
       cols: [
         { h: 'Назва', f: i => '=INDEX(@Debt_Name,' + i + ')', tot: 'label' },
         { h: 'Платіж цього циклу', fmt: FMT.money0, tot: 'sum',
-          f: (i, r) => '=IF(B' + r + '="",0,LET(s0,INDEX(@Debt_Start,' + i + '),dd,' + dueDateLet_(
-            'IF(s0="",DAY(@C_Start),DAY(s0))', 'INDEX(@Debt_Freq,' + i + ')', 'IF(s0="",MONTH(@C_Start),MONTH(s0))', 'N(s0)') +
+          f: (i, r) => '=IF(B' + r + '="",0,LET(sd,INDEX(@Debt_Start,' + i + '),dd,' + dueDateLet_(
+            'IF(sd="",DAY(@C_Start),DAY(sd))', 'INDEX(@Debt_Freq,' + i + ')', 'IF(sd="",MONTH(@C_Start),MONTH(sd))', 'N(sd)') +
             ',IF(AND(dd<>"",INDEX(@Debt_Closed,' + i + ')<>TRUE),MIN(N(INDEX(@Debt_Pay,' + i + ')),N(INDEX(@Debt_Left,' + i + '))+D' + r + '),0)))' },
         { h: 'Сплачено в циклі', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(B' + r + '="",0,' + sumCycle_(debt, 'B' + r) + ')' },
         { h: 'Ще сплатити', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(@C_Past,0,MAX(0,C' + r + '-D' + r + '))' },
