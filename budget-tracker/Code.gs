@@ -38,6 +38,11 @@ const SHEETS = {
   dash:     'Дашборд',
   settings: 'Налаштування',
   ops:      'Операції',
+  year:     'Рік',
+  goals:    'Цілі',
+  debts:    'Борги',
+  subs:     'Підписки',
+  cal:      'Календар',
   lists:    '_Списки',
 };
 
@@ -65,6 +70,7 @@ const REF = {
   groups: ['Потреби', 'Бажання'],
   cycle:  ['Від основної виплати', 'Календарний місяць'],
   current: 'Поточний цикл',
+  currentMonth: 'Поточний місяць',
   months: ['січень', 'лютий', 'березень', 'квітень', 'травень', 'червень',
            'липень', 'серпень', 'вересень', 'жовтень', 'листопад', 'грудень'],
 };
@@ -238,7 +244,8 @@ function buildTracker() {
   deleteTrackerSheets_(ss);
 
   // Спочатку створюємо всі аркуші, бо вони посилаються один на одного.
-  const order = [SHEETS.start, SHEETS.dash, SHEETS.settings, SHEETS.ops, SHEETS.lists];
+  const order = [SHEETS.start, SHEETS.dash, SHEETS.ops, SHEETS.year, SHEETS.goals, SHEETS.debts,
+                 SHEETS.subs, SHEETS.cal, SHEETS.settings, SHEETS.lists];
   const sh = {};
   order.forEach((name, i) => { sh[name] = ss.insertSheet(name, i); });
   removeTempSheet_(ss);
@@ -249,6 +256,11 @@ function buildTracker() {
   buildListsDynamic_(ss, sh[SHEETS.lists]);
   buildOps_(ss, sh[SHEETS.ops]);
   buildDashboard_(ss, sh[SHEETS.dash]);
+  buildYear_(ss, sh[SHEETS.year]);
+  buildGoals_(ss, sh[SHEETS.goals]);
+  buildDebts_(ss, sh[SHEETS.debts]);
+  buildSubs_(ss, sh[SHEETS.subs]);
+  buildCalendar_(ss, sh[SHEETS.cal]);
   buildStart_(sh[SHEETS.start]);
   if (keep) restoreUserData_(ss, saved);
 
@@ -357,7 +369,7 @@ function buildListsStatic_(sh) {
   const ss = sh.getParent();
   sh.getRange('A1:Q1').setValues([['Типи', 'Дохід', 'Витрата', 'Борг', 'Заощадження', 'Рахунки',
     'Частота', 'Місяців', 'Групи', 'Цикл', 'Усі категорії', 'Місяці', 'Період',
-    'SPARKLINE', 'значення', '', 'Місяців історії']]).setFontWeight('bold');
+    'SPARKLINE', 'значення', 'Календар', 'Місяців історії']]).setFontWeight('bold');
 
   const put = (col, values) => sh.getRange(col + '2:' + col + (values.length + 1)).setValues(values.map(v => [v]));
   put('A', REF.types);
@@ -366,6 +378,8 @@ function buildListsStatic_(sh) {
   put('J', REF.cycle);
   put('L', REF.months);
   put('M', [REF.current].concat(REF.months));
+  put('P', [REF.currentMonth].concat(REF.months));
+  ss.setNamedRange(NR + 'L_CalPeriod', sh.getRange(2, 16, REF.months.length + 1, 1));
   sh.getRange('Q2').setValue(HISTORY_MONTHS);
   ss.setNamedRange(NR + 'HistN', sh.getRange('Q2'));
   ss.setNamedRange(NR + 'L_Period', sh.getRange(2, 13, REF.months.length + 1, 1));
@@ -651,7 +665,7 @@ function buildStart_(sh) {
     'Прийшли гроші або щось купила — додай рядок в «Операції»: сума, тип, категорія. Дата і тип «Витрата» поставляться самі.',
     'З телефона ще швидше — через форму (посилання нижче). Це 10 секунд прямо на касі.',
     'Дивись «Дашборд»: велика цифра — скільки можна витратити до наступної виплати і скільки це на день.',
-    'Раз на тиждень заглядай у «Рік», «Цілі», «Борги» і «Підписки». Пропустила кілька днів — нічого страшного, просто допиши.',
+    'Раз на тиждень заглядай у «Рік», «Цілі», «Борги», «Підписки» і «Календар». Пропустила кілька днів — нічого страшного, просто допиши.',
   ];
   steps.forEach((s, i) => {
     sh.getRange(6 + i, 2).setValue(i + 1).setFontSize(16).setFontWeight('bold').setFontColor(THEME.accent)
@@ -1521,6 +1535,24 @@ function selfCheck() {
     'Дашборд: дохід ' + fmtMoney_(dInc) + ' і витрати ' + fmtMoney_(dSp) + ' циклу збігаються з «Операціями»' +
     (Math.abs(jsIncome - dInc) < 0.005 && Math.abs(jsSpent - dSp) < 0.005 ? '' : ' — НІ: в «Операціях» ' + fmtMoney_(jsIncome) + ' / ' + fmtMoney_(jsSpent)));
 
+  // 4б. «Рік»: сума всіх груп (з «Без категорії») = сума операцій кожного місяця року.
+  const year = Number(ss.getRangeByName(NR + 'Year').getValue());
+  const yearTot = new Array(12).fill(0);
+  YEAR_GROUPS.forEach(g => {
+    const rng = ss.getRangeByName(NR + 'Y_Tot_' + g.key);
+    if (rng) rng.getValues()[0].forEach((v, m) => { yearTot[m] += Number(v) || 0; });
+  });
+  const opsTot = new Array(12).fill(0);
+  ops.forEach(o => {
+    if (o.type && o.date instanceof Date && o.date.getFullYear() === year) opsTot[o.date.getMonth()] += o.amount;
+  });
+  const yearBad = [];
+  for (let m = 0; m < 12; m++) {
+    if (Math.abs(yearTot[m] - opsTot[m]) > 0.005) yearBad.push(REF.months[m] + ': «Рік» ' + fmtMoney_(yearTot[m]) + ', «Операції» ' + fmtMoney_(opsTot[m]));
+  }
+  ok(!yearBad.length, yearBad.length ? '«Рік» не збігається з «Операціями»: ' + yearBad.join('; ')
+    : '«Рік»: сума по категоріях = сума в «Операціях» для кожного місяця ' + year);
+
   // 5. Баланси рахунків.
   const accN = ss.getRangeByName(NR + 'Acc_Name').getValues().map(v => v[0]);
   const accI = ss.getRangeByName(NR + 'Acc_Initial').getValues().map(v => Number(v[0]) || 0);
@@ -1575,6 +1607,399 @@ function selfCheck() {
   const failed = res.filter(l => l.charAt(0) === '✗').length;
   ss.toast(failed ? '⚠ Не пройдено перевірок: ' + failed + '. Деталі — на вкладці «Старт».' : '✓ Усі перевірки пройдено.', '💜 Трекер', 8);
   return res;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ЕТАП 3: РІК, ЦІЛІ, БОРГИ, ПІДПИСКИ, КАЛЕНДАР
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Заголовок аркуша: велика назва + підказка. */
+function sheetHead_(sh, title, hint) {
+  styleSheet_(sh);
+  sh.setColumnWidth(1, 24);
+  sh.getRange('B1').setValue(spaced_(title)).setFontSize(18).setFontWeight('bold').setFontColor(THEME.primary);
+  if (hint) sh.getRange('B2').setValue(hint).setFontColor(THEME.muted).setFontStyle('italic');
+}
+
+function headerRow_(sh, row, col, titles) {
+  sh.getRange(row, col, 1, titles.length).setValues([titles])
+    .setBackground(THEME.headerBg).setFontColor(THEME.headerTxt).setFontWeight('bold').setWrap(true)
+    .setVerticalAlignment('middle');
+}
+
+/** Записує стовпець формул f(i, r) для n рядків, починаючи з top. */
+function formulaCol_(sh, top, col, n, f, fmt) {
+  const out = [];
+  for (let i = 1; i <= n; i++) out.push([X_(f(i, top + i - 1))]);
+  const rng = sh.getRange(top, col, n, 1).setFormulas(out);
+  if (fmt) rng.setNumberFormat(fmt);
+  return rng;
+}
+
+// ─── «Рік» ───────────────────────────────────────────────────────────────────
+const YEAR_GROUPS = [
+  { key: 'inc',  title: 'ДОХІД',          type: TYPES.income,  names: 'Inc_Name',  n: 8,  other: true },
+  { key: 'reg',  title: 'РЕГУЛЯРНІ',      type: TYPES.expense, names: 'Reg_Name',  n: 15, other: false, heat: true },
+  { key: 'var',  title: 'ЗМІННІ',         type: TYPES.expense, names: 'Var_Name',  n: 12, other: true,  heat: true },
+  { key: 'debt', title: 'БОРГИ',          type: TYPES.debt,    names: 'Debt_Name', n: 8,  other: true },
+  { key: 'sav',  title: 'ЗАОЩАДЖЕННЯ',    type: TYPES.saving,  names: 'Sav_Name',  n: 8,  other: true },
+];
+
+function monthSum_(type, catRef, m) {
+  return 'SUMIFS(@O_Amount,@O_Type,"' + type + '"' + (catRef ? ',@O_Category,' + catRef : '') +
+    ',@O_Date,">="&DATE(@Year,' + m + ',1),@O_Date,"<"&DATE(@Year,' + (m + 1) + ',1))';
+}
+
+function buildYear_(ss, sh) {
+  sheetHead_(sh, 'РІК', 'Кожна клітинка — сума операцій за календарний місяць року з «Налаштувань». Чим насиченіший колір, тим більша витрата.');
+  const head = 4, firstCol = 3, totalCol = 15; // C..N — місяці, O — ВСЬОГО
+  sh.setColumnWidth(2, 210);
+  for (let c = firstCol; c < totalCol; c++) sh.setColumnWidth(c, 84);
+  sh.setColumnWidth(totalCol, 104);
+  sh.getRange(3, 2).setFormula(X_('="Рік: "&@Year')).setFontWeight('bold').setFontColor(THEME.headerTxt);
+  headerRow_(sh, head, 2, ['Категорія'].concat(REF.months).concat(['ВСЬОГО']));
+
+  let row = head + 1;
+  const pos = {};
+  const heatRanges = [];
+  YEAR_GROUPS.forEach(g => {
+    // Заголовок групи
+    sh.getRange(row, 2, 1, totalCol - 1).setBackground(THEME.calcBg);
+    sh.getRange(row, 2).setValue(spaced_(g.title)).setFontWeight('bold').setFontColor(THEME.primary);
+    row++;
+    const top = row, bottom = row + g.n - 1;
+    formulaCol_(sh, top, 2, g.n, i => '=INDEX(@' + g.names + ',' + i + ')');
+    for (let m = 1; m <= 12; m++) {
+      formulaCol_(sh, top, firstCol + m - 1, g.n, (i, r) => '=IF($B' + r + '="","",' + monthSum_(g.type, '$B' + r, m) + ')', FMT.money0);
+    }
+    formulaCol_(sh, top, totalCol, g.n, (i, r) => '=IF($B' + r + '="","",SUM(C' + r + ':N' + r + '))', FMT.money0);
+    if (g.heat) heatRanges.push(sh.getRange(top, firstCol, g.n, 12));
+    row = bottom + 1;
+    pos[g.key] = { top: top, bottom: bottom };
+
+    let otherRow = null;
+    if (g.other) {
+      otherRow = row;
+      sh.getRange(row, 2).setValue('Без категорії / інше').setFontColor(THEME.muted).setFontStyle('italic');
+      for (let m = 1; m <= 12; m++) {
+        const L = colLetter_(firstCol + m - 1);
+        // Для витрат «інше» = усі витрати − регулярні − змінні.
+        const minus = g.type === TYPES.expense
+          ? '-SUM(' + L + pos.reg.top + ':' + L + pos.reg.bottom + ')-SUM(' + L + top + ':' + L + bottom + ')'
+          : '-SUM(' + L + top + ':' + L + bottom + ')';
+        sh.getRange(row, firstCol + m - 1).setFormula(X_('=' + monthSum_(g.type, null, m) + minus)).setNumberFormat(FMT.money0);
+      }
+      sh.getRange(row, totalCol).setFormula('=SUM(C' + row + ':N' + row + ')').setNumberFormat(FMT.money0);
+      row++;
+    }
+    // Разом по групі
+    sh.getRange(row, 2).setValue('Разом: ' + g.title.toLowerCase()).setFontWeight('bold');
+    for (let c = firstCol; c <= totalCol; c++) {
+      const L = colLetter_(c);
+      sh.getRange(row, c).setFormula('=SUM(' + L + top + ':' + L + (otherRow || bottom) + ')').setNumberFormat(FMT.money0);
+    }
+    sh.getRange(row, 2, 1, totalCol - 1).setFontWeight('bold').setBorder(true, null, null, null, null, null,
+      THEME.primary, SpreadsheetApp.BorderStyle.SOLID);
+    ss.setNamedRange(NR + 'Y_Tot_' + g.key, sh.getRange(row, firstCol, 1, 12));
+    pos[g.key].total = row;
+    row += 2;
+  });
+
+  // ── Підсумок року
+  writeBlockTitle_(sh, row, 'ПІДСУМОК РОКУ', totalCol - 1);
+  row++;
+  const sumHead = row;
+  headerRow_(sh, sumHead, 2, ['По місяцях'].concat(REF.months).concat(['ВСЬОГО']));
+  const t = k => pos[k].total;
+  const lines = [
+    ['Дохід', L => '=' + L + t('inc')],
+    ['Витрати (з боргами)', L => '=' + L + t('reg') + '+' + L + t('var') + '+' + L + t('debt')],
+    ['Заощаджено', L => '=' + L + t('sav')],
+    ['Залишок', L => '=' + L + (sumHead + 1) + '-' + L + (sumHead + 2) + '-' + L + (sumHead + 3)],
+    ['Накопичено з початку року', L => '=SUM($C' + (sumHead + 3) + ':' + L + (sumHead + 3) + ')'],
+  ];
+  lines.forEach((ln, k) => {
+    const r = sumHead + 1 + k;
+    sh.getRange(r, 2).setValue(ln[0]).setFontWeight('bold');
+    for (let c = firstCol; c <= totalCol; c++) {
+      const L = colLetter_(c);
+      let f = ln[1](L);
+      if (c === totalCol) f = k === 4 ? '=N' + r : '=SUM(C' + r + ':N' + r + ')';
+      sh.getRange(r, c).setFormula(f).setNumberFormat(FMT.money0);
+    }
+  });
+  const leftRow = sumHead + 4;
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(0).setFontColor(THEME.danger)
+      .setRanges([sh.getRange(leftRow, firstCol, 1, 13)]).build(),
+  ];
+  // Теплова карта витрат.
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .setGradientMinpointWithValue('#FFFFFF', SpreadsheetApp.InterpolationType.NUMBER, '0')
+    .setGradientMidpointWithValue(THEME.accent, SpreadsheetApp.InterpolationType.PERCENTILE, '50')
+    .setGradientMaxpoint(THEME.danger)
+    .setRanges(heatRanges).build());
+  sh.setConditionalFormatRules(rules);
+
+  // Лінійний графік «Дохід vs витрати».
+  const chart = sh.newChart().setChartType(Charts.ChartType.LINE)
+    .addRange(sh.getRange(sumHead, 2, 3, 13))
+    .setTransposeRowsAndColumns(true)
+    .setNumHeaders(1)
+    .setOption('title', 'Дохід vs витрати по місяцях')
+    .setOption('colors', [THEME.primary, THEME.danger])
+    .setOption('legend', { position: 'bottom' })
+    .setOption('curveType', 'function')
+    .setOption('width', 760).setOption('height', 320)
+    .setPosition(sumHead + lines.length + 2, 2, 0, 0)
+    .build();
+  sh.insertChart(chart);
+
+  sh.setFrozenRows(head);
+  sh.setFrozenColumns(2);
+  sh.protect().setDescription('Рік — рахується автоматично').setWarningOnly(true);
+  trimSheet_(sh, sumHead + lines.length + 22, totalCol + 1);
+}
+
+// ─── «Цілі» ──────────────────────────────────────────────────────────────────
+function buildGoals_(ss, sh) {
+  sheetHead_(sh, 'ЦІЛІ', 'Скарбничка бажань. Нову ціль додай у «Налаштування → Заощадження і цілі», а внески — в «Операції» з типом «Заощадження».');
+  [190, 120, 120, 70, 140, 110, 90, 130, 300].forEach((w, i) => sh.setColumnWidth(2 + i, w));
+  const head = 4, top = 5, n = 8;
+  headerRow_(sh, head, 2, ['Ціль', 'Потрібна сума', 'Накопичено', '%', 'Прогрес', 'Бажана дата',
+    'Місяців лишилось', 'Відкладати на місяць', 'Статус']);
+  const plan = i => 'N(INDEX(@Sav_Monthly,' + i + '))';
+  formulaCol_(sh, top, 2, n, i => '=INDEX(@Sav_Name,' + i + ')');
+  formulaCol_(sh, top, 3, n, (i, r) => '=IF(B' + r + '="",0,N(INDEX(@Sav_Target,' + i + ')))', FMT.money0);
+  formulaCol_(sh, top, 4, n, (i, r) => '=IF(B' + r + '="",0,N(INDEX(@Sav_Saved,' + i + ')))', FMT.money0);
+  formulaCol_(sh, top, 5, n, (i, r) => '=IF(OR(B' + r + '="",C' + r + '=0),"",D' + r + '/C' + r + ')', FMT.pct);
+  formulaCol_(sh, top, 6, n, (i, r) => '=IF(E' + r + '="","",SPARKLINE(MIN(E' + r + ',1),@SP_Main))');
+  formulaCol_(sh, top, 7, n, (i, r) => '=IF(B' + r + '="","",INDEX(@Sav_Date,' + i + '))', FMT.date);
+  formulaCol_(sh, top, 8, n, (i, r) => '=IF(OR(B' + r + '="",G' + r + '=""),"",IFERROR(DATEDIF(@C_Today,G' + r + ',"M"),0))', FMT.int);
+  formulaCol_(sh, top, 9, n, (i, r) => '=IF(OR(B' + r + '="",G' + r + '="",C' + r + '=0),"",IF(D' + r + '>=C' + r + ',0,(C' + r + '-D' + r + ')/MAX(1,H' + r + ')))', FMT.money);
+  formulaCol_(sh, top, 10, n, (i, r) => '=IF(B' + r + '="","",IF(AND(C' + r + '>0,D' + r + '>=C' + r + '),"✓ Ціль досягнута 🎉",' +
+    'IF(G' + r + '="","Додай бажану дату — порахую, скільки відкладати",' +
+    'IF(' + plan(i) + '>=I' + r + ',"✓ Встигаєш: відкладаєш "&FIXED(' + plan(i) + ',0)&" грн на місяць",' +
+    '"⚠ Не встигаєш: додай ще "&FIXED(I' + r + '-' + plan(i) + ',0)&" грн на місяць або перенеси дату"))))');
+
+  const tot = top + n;
+  sh.getRange(tot, 2).setValue('Разом');
+  sh.getRange(tot, 3).setFormula('=SUM(C' + top + ':C' + (tot - 1) + ')').setNumberFormat(FMT.money);
+  sh.getRange(tot, 4).setFormula('=SUM(D' + top + ':D' + (tot - 1) + ')').setNumberFormat(FMT.money);
+  sh.getRange(tot, 5).setFormula(X_('=IF(C' + tot + '=0,"",D' + tot + '/C' + tot + ')')).setNumberFormat(FMT.pct);
+  sh.getRange(tot, 6).setFormula(X_('=IF(E' + tot + '="","",SPARKLINE(MIN(E' + tot + ',1),@SP_Main))'));
+  sh.getRange(tot, 9).setFormula('=SUM(I' + top + ':I' + (tot - 1) + ')').setNumberFormat(FMT.money);
+  sh.getRange(tot, 2, 1, 9).setFontWeight('bold').setBorder(true, null, null, null, null, null,
+    THEME.primary, SpreadsheetApp.BorderStyle.SOLID);
+
+  const st = sh.getRange(top, 10, n, 1);
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith('✓').setFontColor(THEME.okTxt).setRanges([st]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith('⚠').setFontColor(THEME.danger).setRanges([st]).build(),
+  ]);
+  sh.setFrozenRows(head);
+  sh.protect().setDescription('Цілі — рахуються автоматично').setWarningOnly(true);
+  trimSheet_(sh, tot + 3, 11);
+}
+
+// ─── «Борги» ─────────────────────────────────────────────────────────────────
+function buildDebts_(ss, sh) {
+  sheetHead_(sh, 'БОРГИ', 'Метод сніжної кулі: спершу закриваєш найменший борг, а його платіж додаєш до наступного. Без відсотків — прогноз приблизний.');
+  [40, 210, 130, 130, 110, 150].forEach((w, i) => sh.setColumnWidth(2 + i, w));
+  const n = 8, head = 8, top = 9, bottom = top + n - 1;
+  const hid = 12; // L:N — відсортований список (приховано)
+
+  // Відсортовані активні борги: назва | залишок | платіж на місяць.
+  sh.getRange(head, hid, 1, 3).setValues([['Борг', 'Залишок', 'Платіж/міс']]);
+  sh.getRange(top, hid).setFormula(X_('=ARRAYFORMULA(IFERROR(SORT(FILTER(HSTACK(@Debt_Name,IFERROR(@Debt_Left*1,0),' +
+    'IFERROR(@Debt_Pay/VLOOKUP(@Debt_Freq,@L_Freq,2,FALSE),0)),' +
+    '(@Debt_Name<>"")*(IFERROR(@Debt_Left*1,0)>0)*(@Debt_Closed<>TRUE)),2,TRUE),""))'));
+
+  writeBlockTitle_(sh, 6, 'ПОРЯДОК ПОГАШЕННЯ', 6);
+  headerRow_(sh, head, 2, ['№', 'Борг', 'Залишок', 'Платіж на місяць', 'Місяців до закриття', 'Прогноз закриття']);
+  formulaCol_(sh, top, 2, n, (i, r) => '=IF(L' + r + '="","",' + i + ')');
+  formulaCol_(sh, top, 3, n, (i, r) => '=IF(L' + r + '="","",L' + r + ')');
+  formulaCol_(sh, top, 4, n, (i, r) => '=IF(L' + r + '="","",M' + r + ')', FMT.money);
+  formulaCol_(sh, top, 5, n, (i, r) => '=IF(L' + r + '="","",N' + r + ')', FMT.money);
+  formulaCol_(sh, top, 6, n, (i, r) => '=IF(L' + r + '="","",IF(SUM(N$' + top + ':N' + r + ')=0,"—",' +
+    'ROUNDUP(SUM(M$' + top + ':M' + r + ')/SUM(N$' + top + ':N' + r + '),0)))', FMT.int);
+  formulaCol_(sh, top, 7, n, (i, r) => '=IF(NOT(ISNUMBER(F' + r + ')),"",INDEX(@L_Month,MONTH(EDATE(@C_Today,F' + r + ')))&" "&YEAR(EDATE(@C_Today,F' + r + ')))');
+
+  // Велике повідомлення і загальний прогрес.
+  sh.getRange(3, 2, 1, 6).merge().setFormula(X_('=IF(L' + top + '="","✓ Активних боргів немає — так тримати!",' +
+    '"❄ Вільна від боргів: "&INDEX(G' + top + ':G' + bottom + ',MATCH(MAX(F' + top + ':F' + bottom + '),F' + top + ':F' + bottom + ',0)))'))
+    .setFontSize(16).setFontWeight('bold').setFontColor(THEME.headerTxt).setBackground(THEME.headerBg)
+    .setHorizontalAlignment('center');
+  sh.setRowHeight(3, 40);
+  sh.getRange(4, 2, 1, 2).merge().setValue('Загальний прогрес').setFontColor(THEME.muted);
+  sh.getRange(4, 4).setFormula(X_('=IFERROR(SUM(@Debt_Paid)/(SUM(@Debt_Paid)+SUM(@Debt_Left)),"")')).setNumberFormat(FMT.pct)
+    .setFontWeight('bold');
+  sh.getRange(4, 5, 1, 2).merge().setFormula(X_('=IF(D4="","",SPARKLINE(D4,@SP_Ok))'));
+  sh.getRange(4, 7).setFormula(X_('="сплачено "&FIXED(SUM(@Debt_Paid),0)&" грн"')).setFontColor(THEME.muted);
+
+  // Закриті борги.
+  const closedTop = bottom + 3;
+  writeBlockTitle_(sh, closedTop - 1, 'ЗАКРИТІ', 6);
+  headerRow_(sh, closedTop, 3, ['Борг', 'Сплачено']);
+  sh.getRange(closedTop + 1, 3).setFormula(X_('=ARRAYFORMULA(IFERROR(FILTER(HSTACK(@Debt_Name,IFERROR(@Debt_Paid*1,0)),' +
+    '(@Debt_Name<>"")*((IFERROR(@Debt_Left*1,0)=0)+(@Debt_Closed=TRUE)>0)),"Поки немає"))'));
+  sh.getRange(closedTop + 1, 3, n, 2).setFontColor(THEME.muted);
+  sh.getRange(closedTop + 1, 4, n, 1).setNumberFormat(FMT.money);
+
+  sh.hideColumns(hid, 3);
+  sh.protect().setDescription('Борги — рахуються автоматично').setWarningOnly(true);
+  trimSheet_(sh, closedTop + n + 3, hid + 2);
+}
+
+// ─── «Підписки» ──────────────────────────────────────────────────────────────
+function buildSubs_(ss, sh) {
+  sheetHead_(sh, 'ПІДПИСКИ', 'Регулярні платежі з галочкою «Підписка» в «Налаштуваннях». Не користуєшся — зніми «Користуюсь» і скасуй.');
+  [210, 110, 130, 130, 110, 120, 120].forEach((w, i) => sh.setColumnWidth(2 + i, w));
+  const n = 15, head = 6, top = 7, idx = 12; // L — номери рядків підписок у «Налаштуваннях» (приховано)
+  sh.getRange(head, idx).setValue('№ у налаштуваннях');
+  sh.getRange(top, idx).setFormula(X_('=ARRAYFORMULA(IFERROR(FILTER(ROW(@Reg_Name)-ROW(INDEX(@Reg_Name,1))+1,' +
+    '@Reg_Sub=TRUE,@Reg_Name<>""),""))'));
+
+  headerRow_(sh, head, 2, ['Підписка', 'Моя сума', 'Як часто', 'Наступне списання', 'Через', 'За рік', 'Користуюсь']);
+  const at = (rng, r) => 'INDEX(@' + rng + ',L' + r + ')';
+  formulaCol_(sh, top, 2, n, (i, r) => '=IF(L' + r + '="","",' + at('Reg_Name', r) + ')');
+  formulaCol_(sh, top, 3, n, (i, r) => '=IF(L' + r + '="",0,N(' + at('Reg_Mine', r) + '))', FMT.money0);
+  formulaCol_(sh, top, 4, n, (i, r) => '=IF(L' + r + '="","",' + at('Reg_Freq', r) + ')');
+  formulaCol_(sh, top, 5, n, (i, r) => '=IF(L' + r + '="","",ARRAYFORMULA(LET(t,@C_Today,' +
+    'g,IF(' + at('Reg_Day', r) + '="",DAY(t),' + at('Reg_Day', r) + '),' +
+    'k,IFERROR(VLOOKUP(D' + r + ',@L_Freq,2,FALSE),1),' +
+    'f,IFERROR(MATCH(' + at('Reg_Month', r) + ',@L_Month,0),MONTH(@Start)),' +
+    'mo,DATE(YEAR(t),MONTH(t)+SEQUENCE(13,1,0),1),' +
+    'dd,DATE(YEAR(mo),MONTH(mo),IF(g>DAY(EOMONTH(mo,0)),DAY(EOMONTH(mo,0)),g)),' +
+    'IFERROR(MIN(FILTER(dd,(MOD(MONTH(dd)-f,k)=0)*(dd>=t))),""))))', FMT.date);
+  formulaCol_(sh, top, 6, n, (i, r) => '=IF(E' + r + '="","",E' + r + '-@C_Today)', FMT.days);
+  formulaCol_(sh, top, 7, n, (i, r) => '=IF(L' + r + '="",0,C' + r + '*12/IFERROR(VLOOKUP(D' + r + ',@L_Freq,2,FALSE),1))', FMT.money0);
+  formulaCol_(sh, top, 8, n, (i, r) => '=IF(L' + r + '="","",IF(' + at('Reg_Use', r) + '=TRUE,"✓ так","✗ ні"))');
+
+  const bottom = top + n - 1;
+  sh.getRange(3, 2, 1, 7).merge().setFormula(X_(
+    '=IF(COUNT(L' + top + ':L' + bottom + ')=0,"Підписок поки немає — познач їх у «Налаштуваннях».",' +
+    '"Підписки коштують "&FIXED(SUM(G' + top + ':G' + bottom + '),0)&" грн на рік")'))
+    .setFontSize(15).setFontWeight('bold').setFontColor(THEME.headerTxt).setBackground(THEME.headerBg).setHorizontalAlignment('center');
+  sh.setRowHeight(3, 36);
+  sh.getRange(4, 2, 1, 7).merge().setFormula(X_(
+    '=IF(SUMIF(H' + top + ':H' + bottom + ',"✗ ні",G' + top + ':G' + bottom + ')=0,"✓ Усіма підписками ти користуєшся.",' +
+    '"💸 Можна звільнити "&FIXED(SUMIF(H' + top + ':H' + bottom + ',"✗ ні",G' + top + ':G' + bottom + '),0)&" грн на рік — скасуй ті, де «✗ ні».")'))
+    .setFontColor(THEME.danger).setHorizontalAlignment('center');
+
+  const rows = sh.getRange(top, 2, n, 7);
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$H' + top + '="✗ ні"')
+      .setBackground(THEME.dangerBg).setRanges([rows]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(F_('=AND(ISNUMBER($F' + top + '),$F' + top + '<=3)'))
+      .setBackground(THEME.warnBg).setRanges([sh.getRange(top, 5, n, 2)]).build(),
+  ]);
+  sh.hideColumns(idx);
+  sh.setFrozenRows(head);
+  sh.protect().setDescription('Підписки — рахуються автоматично').setWarningOnly(true);
+  trimSheet_(sh, bottom + 3, idx + 1);
+}
+
+// ─── «Календар» ──────────────────────────────────────────────────────────────
+const CAL = { selRow: 2, titleRow: 4, dowRow: 5, gridTop: 6, weeks: 6, hidLabel: 11, hidVal: 12 };
+
+function buildCalendar_(ss, sh) {
+  sheetHead_(sh, 'КАЛЕНДАР', '');
+  for (let c = 2; c <= 8; c++) sh.setColumnWidth(c, 104);
+  sh.getRange(CAL.selRow, 2).setValue('Місяць').setFontWeight('bold').setHorizontalAlignment('right');
+  const sel = sh.getRange(CAL.selRow, 3);
+  sel.setValue(REF.currentMonth).setBackground(THEME.input).setFontWeight('bold')
+    .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(listRange_(ss, 'L_CalPeriod'), true)
+      .setAllowInvalid(false).setHelpText('Поточний місяць або місяць року з «Налаштувань».').build());
+  ss.setNamedRange(NR + 'K_Sel', sel);
+
+  // Службові клітинки (K:L, приховані).
+  const hidden = [
+    ['K_First', 'Перший день місяця', '=IF(@K_Sel=INDEX(@L_CalPeriod,1),DATE(YEAR(@C_Today),MONTH(@C_Today),1),DATE(@Year,MATCH(@K_Sel,@L_Month,0),1))', FMT.date],
+    ['K_GridStart', 'Понеділок першого тижня', '=@K_First-WEEKDAY(@K_First,2)+1', FMT.date],
+    ['K_Days', 'Днів у місяці', '=DAY(EOMONTH(@K_First,0))', FMT.int],
+    ['K_DayBudget', 'Денний бюджет змінних', '=IFERROR(SUM(@Var_Budget)/@K_Days,0)', FMT.money],
+    ['K_TodayDay', 'Сьогоднішнє число (якщо цей місяць)', '=IF(EOMONTH(@C_Today,0)=EOMONTH(@K_First,0),DAY(@C_Today),0)', FMT.int],
+  ];
+  hidden.forEach((h, i) => ss.setNamedRange(NR + h[0], sh.getRange(1 + i, CAL.hidVal)));
+  hidden.forEach((h, i) => {
+    sh.getRange(1 + i, CAL.hidLabel).setValue(h[1]);
+    sh.getRange(1 + i, CAL.hidVal).setFormula(X_(h[2])).setNumberFormat(h[3]);
+  });
+  const abs = key => '$' + colLetter_(CAL.hidVal) + '$' + (1 + hidden.findIndex(h => h[0] === key));
+
+  sh.getRange(CAL.titleRow, 2, 1, 7).merge()
+    .setFormula(X_('=UPPER(INDEX(@L_Month,MONTH(@K_First)))&" "&YEAR(@K_First)'))
+    .setFontSize(16).setFontWeight('bold').setFontColor(THEME.primary).setHorizontalAlignment('center');
+  headerRow_(sh, CAL.dowRow, 2, ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд']);
+  sh.getRange(CAL.dowRow, 2, 1, 7).setHorizontalAlignment('center');
+
+  const dayRows = [], amtRows = [];
+  for (let w = 0; w < CAL.weeks; w++) {
+    const dr = CAL.gridTop + w * 2, ar = dr + 1;
+    dayRows.push(dr); amtRows.push(ar);
+    const dayF = [], amtF = [];
+    for (let d = 0; d < 7; d++) {
+      const off = w * 7 + d;
+      dayF.push(X_('=LET(dt,@K_GridStart+' + off + ',IF(MONTH(dt)=MONTH(@K_First),DAY(dt),""))'));
+      amtF.push(X_('=LET(dt,@K_GridStart+' + off + ',IF(OR(MONTH(dt)<>MONTH(@K_First),dt>@C_Today),"",' +
+        'SUMPRODUCT(N(@O_Amount)*(@O_Type="' + TYPES.expense + '")*(@O_Date>=dt)*(@O_Date<dt+1)*' +
+        '(@O_Category<>"")*ISNUMBER(MATCH(@O_Category,@Var_Name,0)))))'));
+    }
+    sh.getRange(dr, 2, 1, 7).setFormulas([dayF]).setFontColor(THEME.muted).setFontSize(9).setVerticalAlignment('bottom');
+    sh.getRange(ar, 2, 1, 7).setFormulas([amtF]).setNumberFormat('#,##0 "грн";-#,##0 "грн";"—"')
+      .setFontWeight('bold').setHorizontalAlignment('center').setVerticalAlignment('top');
+    sh.setRowHeight(dr, 18);
+    sh.setRowHeight(ar, 34);
+  }
+  const gridBottom = CAL.gridTop + CAL.weeks * 2 - 1;
+  sh.getRange(CAL.gridTop, 2, CAL.weeks * 2, 7).setBorder(true, true, true, true, true, null,
+    THEME.headerBg, SpreadsheetApp.BorderStyle.SOLID);
+
+  // Кольори: більше денного бюджету — червоний, у межах — зелений, 0 — «день без витрат».
+  const amtRanges = amtRows.map(r => sh.getRange(r, 2, 1, 7));
+  const dayRanges = dayRows.map(r => sh.getRange(r, 2, 1, 7));
+  const a1 = 'B' + amtRows[0];
+  const rules = [
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(F_('=AND(ISNUMBER(' + a1 + '),' + a1 + '>0,' + abs('K_DayBudget') + '>0,' + a1 + '>' + abs('K_DayBudget') + ')'))
+      .setBackground(THEME.dangerBg).setFontColor(THEME.danger).setRanges(amtRanges).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(F_('=AND(ISNUMBER(' + a1 + '),' + a1 + '>0)'))
+      .setBackground(THEME.okBg).setFontColor(THEME.okTxt).setRanges(amtRanges).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(F_('=AND(ISNUMBER(' + a1 + '),' + a1 + '=0)'))
+      .setBackground(THEME.headerBg).setFontColor(THEME.primary).setRanges(amtRanges).build(),
+    SpreadsheetApp.newConditionalFormatRule()
+      .whenFormulaSatisfied(F_('=AND(ISNUMBER(B' + dayRows[0] + '),B' + dayRows[0] + '=' + abs('K_TodayDay') + ')'))
+      .setBackground(THEME.primary).setFontColor('#FFFFFF').setRanges(dayRanges).build(),
+  ];
+  sh.setConditionalFormatRules(rules);
+
+  // Підсумок під сіткою.
+  const amtList = amtRows.map(r => 'B' + r + ':H' + r).join(',');
+  const s = gridBottom + 2;
+  const summary = [
+    ['Змінні витрати за місяць', '=SUM(' + amtList + ')', FMT.money],
+    ['Денний бюджет змінних', '=@K_DayBudget', FMT.money],
+    ['Днів без витрат', '=' + amtRows.map(r => 'COUNTIF(B' + r + ':H' + r + ',0)').join('+'), FMT.int],
+    ['Днів понад бюджет', '=IF(@K_DayBudget=0,0,' + amtRows.map(r => 'COUNTIF(B' + r + ':H' + r + ',">"&@K_DayBudget)').join('+') + ')', FMT.int],
+    ['Найдорожчий день', '=MAX(' + amtList + ')', FMT.money],
+  ];
+  writeBlockTitle_(sh, s, 'ПІДСУМОК МІСЯЦЯ', 7);
+  summary.forEach((x, i) => {
+    sh.getRange(s + 1 + i, 2, 1, 2).merge().setValue(x[0]);
+    sh.getRange(s + 1 + i, 4).setFormula(X_(x[1])).setNumberFormat(x[2]).setFontWeight('bold');
+  });
+  sh.getRange(s + summary.length + 2, 2, 1, 7).merge()
+    .setValue('Зелений — у межах денного бюджету, червоний — понад нього, блакитний «—» — день без змінних витрат.')
+    .setFontColor(THEME.muted).setFontStyle('italic').setWrap(true);
+
+  sh.hideColumns(CAL.hidLabel, 2);
+  protect_(sh.getRange(1, 1, 1, CAL.hidVal), 'Календар: шапка');
+  protect_(sh.getRange(CAL.selRow, 4, 1, CAL.hidVal - 3), 'Календар');
+  protect_(sh.getRange(CAL.selRow + 1, 1, s + summary.length + 2 - CAL.selRow, CAL.hidVal), 'Календар');
+  trimSheet_(sh, s + summary.length + 3, CAL.hidVal);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
