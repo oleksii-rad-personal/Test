@@ -164,7 +164,7 @@ const SETTINGS_BLOCKS = [
       { key: 'Paid',    h: 'Сплачено',            t: 'f', fmt: 'money', w: 120,
         f: '=IF({Name}="","",SUMIFS(' + OPS_REF + '!$C:$C,' + OPS_REF + '!$B:$B,"' + TYPES.debt + '",' + OPS_REF + '!$D:$D,{Name}))' },
       { key: 'Left',    h: 'Залишок',             t: 'f', fmt: 'money', w: 120,
-        f: '=IF({Name}="","",IF({Closed},0,MAX(0,IF({Initial}="",{Pay}*{Count},{Initial})-{Paid})))' },
+        f: '=IF({Name}="","",IF({Closed},0,IF(AND({Initial}="",{Count}=""),"",MAX(0,IF({Initial}="",{Pay}*{Count},{Initial})-{Paid}))))' },
     ],
   },
   {
@@ -227,6 +227,8 @@ function onOpen() {
     .addSeparator()
     .addItem('Створити / оновити форму для телефону', 'createEntryForm')
     .addItem('Перевірити таблицю', 'selfCheck')
+    .addSeparator()
+    .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
     .addToUi();
 }
 
@@ -1078,14 +1080,14 @@ function dashBlocks_() {
         { h: 'Платіж цього циклу', fmt: FMT.money0, tot: 'sum',
           f: (i, r) => '=IF(B' + r + '="",0,LET(sd,INDEX(@Debt_Start,' + i + '),dd,' + dueDateLet_(
             'IF(sd="",DAY(@C_Start),DAY(sd))', 'INDEX(@Debt_Freq,' + i + ')', 'IF(sd="",MONTH(@C_Start),MONTH(sd))', 'N(sd)') +
-            ',IF(AND(dd<>"",INDEX(@Debt_Closed,' + i + ')<>TRUE),MIN(N(INDEX(@Debt_Pay,' + i + ')),N(INDEX(@Debt_Left,' + i + '))+D' + r + '),0)))' },
+            ',IF(AND(dd<>"",INDEX(@Debt_Closed,' + i + ')<>TRUE),MIN(N(INDEX(@Debt_Pay,' + i + ')),IF(INDEX(@Debt_Left,' + i + ')="",N(INDEX(@Debt_Pay,' + i + ')),N(INDEX(@Debt_Left,' + i + '))+D' + r + ')),0)))' },
         { h: 'Сплачено в циклі', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(B' + r + '="",0,' + sumCycle_(debt, 'B' + r) + ')' },
         { h: 'Ще сплатити', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(@C_Past,0,MAX(0,C' + r + '-D' + r + '))' },
         { h: 'Залишок боргу', fmt: FMT.money0, tot: 'sum', f: (i, r) => '=IF(B' + r + '="",0,N(INDEX(@Debt_Left,' + i + ')))' },
         { h: 'Прогноз закриття',
-          f: (i, r) => '=IF(B' + r + '="","",IF(F' + r + '=0,"✓ закрито",LET(p,N(INDEX(@Debt_Pay,' + i + ')),' +
+          f: (i, r) => '=IF(B' + r + '="","",IF(AND(INDEX(@Debt_Left,' + i + ')="",INDEX(@Debt_Closed,' + i + ')<>TRUE),"допиши залишок у «Налаштуваннях»",IF(F' + r + '=0,"✓ закрито",LET(p,N(INDEX(@Debt_Pay,' + i + ')),' +
             'k,IFERROR(VLOOKUP(INDEX(@Debt_Freq,' + i + '),@L_Freq,2,FALSE),1),IF(p=0,"—",' +
-            'LET(n,ROUNDUP(F' + r + '/p,0),d,EDATE(@C_Start,IF(E' + r + '>0,(n-1)*k,n*k)),INDEX(@L_Month,MONTH(d))&" "&YEAR(d))))))' },
+            'LET(n,ROUNDUP(F' + r + '/p,0),d,EDATE(@C_Start,IF(E' + r + '>0,(n-1)*k,n*k)),INDEX(@L_Month,MONTH(d))&" "&YEAR(d)))))))' },
       ],
     },
     {
@@ -1156,7 +1158,7 @@ function dashBlocks_() {
           '"✓ Невикористаних підписок немає.")))'],
         ['=ARRAYFORMULA(LET(nm,@Debt_Name,l,IFERROR(@Debt_Left*1,0),a,(nm<>"")*(l>0)*(@Debt_Closed<>TRUE),' +
           'c,IF(a,l,MAX(l)+1),mn,MIN(c),' +
-          'IF(SUM(a)=0,"✓ Активних боргів немає. Так тримати!",' +
+          'IF(SUM(a)=0,IF(SUMPRODUCT((@Debt_Name<>"")*(@Debt_Left="")*(@Debt_Closed<>TRUE))>0,"❄ Допиши залишки боргів у «Налаштуваннях» — тоді покажу, який закривати першим.","✓ Активних боргів немає. Так тримати!"),' +
           '"❄ Сніжна куля: першим закривай «"&INDEX(nm,MATCH(mn,c,0))&"» — залишок "&FIXED(mn,0)&" грн.")))'],
       ],
     },
@@ -1868,11 +1870,13 @@ function buildDebts_(ss, sh) {
   formulaCol_(sh, top, 7, n, (i, r) => '=IF(NOT(ISNUMBER(F' + r + ')),"",INDEX(@L_Month,MONTH(EDATE(@C_Today,F' + r + ')))&" "&YEAR(EDATE(@C_Today,F' + r + ')))');
 
   // Велике повідомлення і загальний прогрес.
-  sh.getRange(3, 2, 1, 6).merge().setFormula(X_('=IF(L' + top + '="","✓ Активних боргів немає — так тримати!",' +
+  sh.getRange(3, 2, 1, 6).merge().setFormula(X_('=IF(L' + top + '="",IF(SUMPRODUCT((@Debt_Name<>"")*(@Debt_Left="")*(@Debt_Closed<>TRUE))>0,"Допиши залишки боргів у «Налаштуваннях»","✓ Активних боргів немає — так тримати!"),' +
     '"❄ Вільна від боргів: "&INDEX(G' + top + ':G' + bottom + ',MATCH(MAX(F' + top + ':F' + bottom + '),F' + top + ':F' + bottom + ',0)))'))
     .setFontSize(16).setFontWeight('bold').setFontColor(THEME.headerTxt).setBackground(THEME.headerBg)
     .setHorizontalAlignment('center');
   sh.setRowHeight(3, 40);
+  sh.getRange(5, 2, 1, 6).merge().setFormula(X_('=IFERROR("⚠ Без залишку (не в сніжній кулі): "&TEXTJOIN(", ",TRUE,' +
+    'FILTER(@Debt_Name,(@Debt_Name<>"")*(@Debt_Left="")*(@Debt_Closed<>TRUE))),"")')).setFontColor(THEME.danger).setWrap(true);
   sh.getRange(4, 2, 1, 2).merge().setValue('Загальний прогрес').setFontColor(THEME.muted);
   sh.getRange(4, 4).setFormula(X_('=IFERROR(SUM(@Debt_Paid)/(SUM(@Debt_Paid)+SUM(@Debt_Left)),"")')).setNumberFormat(FMT.pct)
     .setFontWeight('bold');
@@ -1884,7 +1888,7 @@ function buildDebts_(ss, sh) {
   writeBlockTitle_(sh, closedTop - 1, 'ЗАКРИТІ', 6);
   headerRow_(sh, closedTop, 3, ['Борг', 'Сплачено']);
   sh.getRange(closedTop + 1, 3).setFormula(X_('=ARRAYFORMULA(IFERROR(FILTER(HSTACK(@Debt_Name,IFERROR(@Debt_Paid*1,0)),' +
-    '(@Debt_Name<>"")*((IFERROR(@Debt_Left*1,0)=0)+(@Debt_Closed=TRUE)>0)),"Поки немає"))'));
+    '(@Debt_Name<>"")*((IFERROR(@Debt_Left*1,-1)=0)+(@Debt_Closed=TRUE)>0)),"Поки немає"))'));
   sh.getRange(closedTop + 1, 3, n, 2).setFontColor(THEME.muted);
   sh.getRange(closedTop + 1, 4, n, 1).setNumberFormat(FMT.money);
 
@@ -2202,6 +2206,205 @@ function onFormSubmit(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ІМПОРТ З ТАБЛИЦІ «БЮДЖЕТ» (аркуші-місяці: Категорія | Сума | Звідки; праворуч — Дохід)
+// Останній місяць → план у «Налаштуваннях», попередні → історія в «Операціях».
+// Особисті назви категорій не зашиті в код: правила нижче лише загальні.
+// ─────────────────────────────────────────────────────────────────────────────
+const IMPORT = {
+  payDay: { 'Зарплата': 1, 'Аванс': 15 },
+  otherIncomeDay: 20,
+  avansDay: 15,
+  sourceTag: 'імпорт',
+  // [ключові слова (початок слова), куди, назва в трекері, група 50/30/20]
+  rules: [
+    [['квартир', 'оренд'],                 'reg',  'Квартира',  'Потреби'],
+    [['комунал'],                          'reg',  'Комуналка', 'Потреби'],
+    [['психолог'],                         'reg',  'Психолог',  'Потреби'],
+    [['мін. платіж', 'мін платіж'],        'debt', 'Кредитна картка (мін. платіж)'],
+    [['розср', 'розстр', 'частин', 'кредит 1'], 'debt', 'Оплата частинами'],
+    [['кредит'],                           'debt', 'Кредит'],
+    [['відклас', 'заощад', 'подушк'],      'sav',  'Подушка безпеки'],
+    [['підписк'],                          'var',  'Підписки (разом)', 'Бажання'],
+    [['їжа', 'продукт'],                   'var',  'Їжа',       'Потреби'],
+    [['відпоч', 'відпуст'],                'var',  'Відпочинок', 'Бажання'],
+    [['здоров', 'стоматолог', 'лік'],      'var',  'Здоров\'я', 'Потреби'],
+    [['реч', 'одяг'],                      'var',  'Речі',      'Бажання'],
+    [['податк'],                           'var',  'Податки',   'Потреби'],
+    [['мак', 'ноутбук', 'projector', 'проектор', 'кондиціон', 'технік'], 'var', 'Техніка', 'Бажання'],
+    [['спорт'],                            'var',  'Спорт',     'Бажання'],
+    [['барбер', 'перукар'],                'var',  'Барбер',    'Бажання'],
+    [['невідомо', 'інше'],                 'var',  'Інше',      'Бажання'],
+  ],
+};
+
+/** Меню: запитує посилання на таблицю і запускає імпорт. */
+function importBudgetSheet() {
+  const ui = SpreadsheetApp.getUi();
+  const r = ui.prompt('Імпорт з іншої таблиці',
+    'Встав посилання на таблицю з аркушами-місяцями (Січень, Лютий…).\n' +
+    'Останній місяць стане планом у «Налаштуваннях», попередні — історією в «Операціях».\n' +
+    'Поточні налаштування й операції буде замінено (форма для телефону залишиться).',
+    ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  const m = String(r.getResponseText()).match(/[-\w]{25,}/);
+  if (!m) { ui.alert('Не бачу ID таблиці в посиланні.'); return; }
+  const res = importFromSpreadsheet_(m[0]);
+  ui.alert('Імпорт завершено', res, ui.ButtonSet.OK);
+}
+
+function importFromSpreadsheet_(sourceId) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEETS.ops)) throw new Error('Спочатку побудуй трекер.');
+  const src = SpreadsheetApp.openById(sourceId);
+  const year = Number(ss.getRangeByName(NR + 'Year').getValue()) || todayParts_(ss).y;
+
+  // 1. Зчитуємо місяці.
+  const months = [];
+  REF.months.forEach((name, mi) => {
+    const sh = src.getSheets().filter(s => s.getName().trim().toLowerCase() === name)[0];
+    if (sh) months.push(Object.assign({ m: mi }, parseBudgetMonth_(sh)));
+  });
+  if (!months.length) throw new Error('У таблиці немає аркушів з назвами місяців.');
+  const plan = months[months.length - 1];
+  const history = months.slice(0, -1);
+  const subsSheet = src.getSheets().filter(s => /підписк/i.test(s.getName()))[0];
+  const subs = subsSheet ? subsSheet.getDataRange().getValues()
+    .filter(r => String(r[0]).trim() && Number(r[1]) > 0)
+    .map(r => ({ name: String(r[0]).trim(), amount: Number(r[1]) })) : [];
+
+  // 2. Категорії: правила + найчастіші «свої» назви, поки є місце.
+  const varCap = SETTINGS_BLOCKS.filter(b => b.key === 'Var')[0].rows;
+  const regCap = SETTINGS_BLOCKS.filter(b => b.key === 'Reg')[0].rows;
+  const cats = { reg: {}, var: {}, debt: {}, sav: {} }; // назва → { group, plan, src }
+  const unknown = {};                                    // назва → кількість місяців
+  months.forEach(mo => mo.expenses.forEach(e => {
+    const hit = matchImportRule_(e.name);
+    if (hit) cats[hit.kind][hit.target] = cats[hit.kind][hit.target] || { group: hit.group || '' };
+    else unknown[e.name] = (unknown[e.name] || 0) + 1;
+  }));
+  const free = varCap - Object.keys(cats.var).length - (cats.var['Інше'] ? 0 : 1);
+  const own = Object.keys(unknown).sort((a, b) => unknown[b] - unknown[a]).slice(0, Math.max(0, free));
+  own.forEach(n => { cats.var[n] = { group: 'Бажання' }; });
+  cats.var['Інше'] = cats.var['Інше'] || { group: 'Бажання' };
+  const resolve = name => {
+    const hit = matchImportRule_(name);
+    if (hit) return hit;
+    if (cats.var[name]) return { kind: 'var', target: name };
+    const first = name.split(/\s+/)[0];
+    if (cats.var[first]) return { kind: 'var', target: first };
+    return { kind: 'var', target: 'Інше' };
+  };
+
+  // 3. План (останній місяць).
+  const sum = (obj, key, v) => { obj[key] = (obj[key] || 0) + v; };
+  const planBy = { reg: {}, var: {}, debt: {}, sav: {} };
+  const srcBy = {};
+  plan.expenses.forEach(e => { const t = resolve(e.name); sum(planBy[t.kind], t.target, e.amount); srcBy[t.target] = e.src; });
+  // Підписки поштучно вже є в регулярних — загальну суму в бюджет змінних не дублюємо.
+  if (subs.length) Object.keys(planBy.var).forEach(k => { if (/^підписк/i.test(k)) delete planBy.var[k]; });
+
+  // 4. Налаштування.
+  const incNames = ['Зарплата', 'Аванс'];
+  months.forEach(mo => mo.income.forEach(x => { if (incNames.indexOf(x.name) === -1) incNames.push(x.name); }));
+  const planInc = {};
+  plan.income.forEach(x => sum(planInc, x.name, x.amount));
+  resetDemoState_();
+  setKV_(ss, { Year: year, Start: isoDate_(year, months[0].m, 1), Calc: '', Cycle: REF.cycle[0] });
+  setBlockRows_(ss, 'Inc', incNames.slice(0, 8).map(n => ({
+    Name: n, Main: n === 'Зарплата', Exp: planInc[n] || '', Day: IMPORT.payDay[n] || '',
+  })));
+  const regRows = Object.keys(cats.reg).map(n => ({
+    Name: n, Total: planBy.reg[n] || '', Share: 1, Freq: REF.freq[0][0], Group: cats.reg[n].group || 'Потреби',
+    Day: /аванс/i.test(srcBy[n] || '') ? IMPORT.avansDay : 1,
+  }));
+  subs.forEach(s => regRows.push({ Name: s.name, Total: s.amount, Share: 1, Freq: REF.freq[0][0], Group: 'Бажання', Sub: true, Use: true }));
+  setBlockRows_(ss, 'Reg', regRows.slice(0, regCap));
+  setBlockRows_(ss, 'Var', Object.keys(cats.var).map(n => ({ Name: n, Budget: planBy.var[n] || '', Group: cats.var[n].group || 'Бажання' })));
+  const firstSeen = {};
+  months.forEach(mo => mo.expenses.forEach(e => {
+    const t = resolve(e.name);
+    if (t.kind === 'debt' && firstSeen[t.target] === undefined) firstSeen[t.target] = mo.m;
+  }));
+  setBlockRows_(ss, 'Debt', Object.keys(cats.debt).map(n => ({
+    Name: n, Pay: planBy.debt[n] || '', Freq: REF.freq[0][0],
+    Start: isoDate_(year, firstSeen[n] !== undefined ? firstSeen[n] : months[0].m, 1),
+    Closed: !planBy.debt[n],
+  })));
+  setBlockRows_(ss, 'Sav', Object.keys(cats.sav).map(n => ({ Name: n, Monthly: planBy.sav[n] || '' })));
+  setBlockRows_(ss, 'Acc', [{ Name: 'Картка', Main: true }, { Name: 'Готівка' }]);
+  SpreadsheetApp.flush();
+
+  // 5. Історія → «Операції».
+  const typeOf = { reg: TYPES.expense, var: TYPES.expense, debt: TYPES.debt, sav: TYPES.saving };
+  const ops = [];
+  history.forEach(mo => {
+    mo.income.forEach(x => ops.push([isoDate_(year, mo.m, IMPORT.payDay[x.name] || IMPORT.otherIncomeDay),
+      TYPES.income, x.amount, x.name, '', '', IMPORT.sourceTag]));
+    mo.expenses.forEach(e => {
+      const t = resolve(e.name);
+      const day = /аванс/i.test(e.src) ? IMPORT.avansDay : 1;
+      ops.push([isoDate_(year, mo.m, day), typeOf[t.kind], e.amount, t.target, '',
+        e.name !== t.target ? e.name : '', IMPORT.sourceTag]);
+    });
+  });
+  const opsSh = ss.getSheetByName(SHEETS.ops);
+  const n = DATA_ROWS - 1;
+  const blank = new Array(OPS_HEADERS.length).fill('');
+  const out = ops.slice(0, n).concat(Array.from({ length: Math.max(0, n - ops.length) }, () => blank.slice()));
+  writeOpsRows_(opsSh, 2, out);
+  ss.getRangeByName(NR + 'D_Period').setValue(REF.current);
+  SpreadsheetApp.flush();
+
+  const debtsNoLeft = Object.keys(cats.debt).filter(k => planBy.debt[k]);
+  const msg = 'Імпортовано ' + ops.length + ' операцій за ' + REF.months[history[0] ? history[0].m : plan.m] + '–' +
+    REF.months[history.length ? history[history.length - 1].m : plan.m] + '. План «' + REF.months[plan.m] +
+    '» — у «Налаштуваннях» (дохід, регулярні, бюджети, борги' + (subs.length ? ', ' + subs.length + ' підписок' : '') + ').\n\n' +
+    'Що дописати руками:\n' +
+    (debtsNoLeft.length ? '• залишок боргів (' + debtsNoLeft.join(', ') + ') — «Налаштування → Борги», колонка «Початковий залишок»;\n' : '') +
+    '• фактичні операції за ' + REF.months[plan.m] + ' (зарплата, оплати) — в «Операції» або через форму;\n' +
+    '• цілі заощаджень — «Налаштування → Заощадження і цілі».';
+  Logger.log(msg);
+  return msg;
+}
+
+/** Один аркуш-місяць: витрати (A:C, рядки 3–17) і дохід (E3…, підписи в D). */
+function parseBudgetMonth_(sh) {
+  const v = sh.getRange(1, 1, Math.min(sh.getMaxRows(), 30), Math.min(sh.getMaxColumns(), 6)).getValues();
+  const expenses = [];
+  for (let r = 2; r < v.length; r++) {
+    const name = String(v[r][0]).trim();
+    if (/^всього/i.test(name)) break;
+    const amount = Number(v[r][1]);
+    if (name && amount > 0) expenses.push({ name: name, amount: amount, src: String(v[r][2] || '').trim() });
+  }
+  const income = [];
+  const defaults = ['Зарплата', 'Аванс'];
+  for (let r = 2; r < Math.min(v.length, 8); r++) {
+    const amount = Number(v[r][4]);
+    if (!(amount > 0)) break;
+    const label = String(v[r][3] || '').split('\n')[0].trim();
+    let name;
+    if (/^зп|зарплат/i.test(label)) name = 'Зарплата';
+    else if (/аванс/i.test(label)) name = 'Аванс';
+    else if (label) name = label.slice(0, 40);
+    else name = defaults[r - 2] || 'Інший дохід';
+    income.push({ name: name, amount: amount });
+  }
+  return { expenses: expenses, income: income };
+}
+
+function matchImportRule_(name) {
+  const low = String(name).toLowerCase().replace(/ʼ|'/g, '');
+  for (let i = 0; i < IMPORT.rules.length; i++) {
+    const rule = IMPORT.rules[i];
+    if (rule[0].some(k => low.indexOf(k.replace(/'/g, '')) === 0 || low.indexOf(' ' + k) !== -1)) {
+      return { kind: rule[1], target: rule[2], group: rule[3] };
+    }
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
