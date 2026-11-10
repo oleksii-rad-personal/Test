@@ -620,6 +620,10 @@ function applyRule_(ss, name) {
   ss.getRangeByName(NR + 'Rule_Shares').setValues(pad(rule.buckets, b => [b[1]]));
   ss.getRangeByName(NR + 'Rule_Desc').setValues(pad(rule.buckets, b => [b[3]]));
   ss.getRangeByName(NR + 'Rule_Codes').setValues(pad(rule.buckets, b => [b[2]]));
+  if (!rule.buckets.length) {
+    ss.getRangeByName(NR + 'Rule_Desc').getCell(1, 1)
+      .setValue('Кошиків немає — трекер просто показує, куди йдуть гроші. Хочеш ціль — обери правило вище.');
+  }
 }
 
 /** Блок «назва — значення — підказка». Створює іменовані діапазони NR+key. */
@@ -2716,9 +2720,30 @@ function tourFocus(key) {
     return goToSheet(key);
   }
   if (!rng) return 'Спершу побудуй трекер: меню «Трекер» → «Побудувати трекер з нуля».';
-  ss.setActiveSheet(rng.getSheet());
-  rng.activate();
+  focusCentered_(rng);
   return 'ok';
+}
+
+/**
+ * Прокручує аркуш так, щоб блок опинився посередині екрана, і виділяє його.
+ * Прямого «scroll to» в Apps Script немає: activate() прокручує, поки клітинка не стане видимою
+ * біля краю. Тому: скидаємо прокрутку вгору → активуємо «якір» нижче блоку (він стає біля нижнього
+ * краю, а блок — посередині) → виділяємо сам блок (він уже видимий, тож екран не стрибає).
+ */
+const VISIBLE_ROWS = 26; // приблизна кількість рядків на екрані ноутбука
+function focusCentered_(rng) {
+  const sh = rng.getSheet();
+  const ss = sh.getParent();
+  ss.setActiveSheet(sh);
+  const top = rng.getRow(), h = rng.getNumRows(), col = rng.getColumn();
+  sh.getRange(1, col).activate();
+  SpreadsheetApp.flush();
+  const anchor = h >= VISIBLE_ROWS - 4 ? top + VISIBLE_ROWS - 3 : top + Math.ceil((VISIBLE_ROWS + h) / 2);
+  if (anchor > VISIBLE_ROWS) {
+    sh.getRange(Math.min(anchor, sh.getMaxRows()), col).activate();
+    SpreadsheetApp.flush();
+  }
+  rng.activate();
 }
 
 function showQuiz() {
