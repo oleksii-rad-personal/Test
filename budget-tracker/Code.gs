@@ -290,6 +290,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🏦 Імпорт виписки з банку…', 'showStatementImport')
     .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
+    .addItem('📱 Підключити застосунок на телефон', 'showConnectApp')
     .addItem('📤 Підготувати копію для поширення', 'makeShareCopy')
     .addToUi();
   showOpenHint_();
@@ -1087,6 +1088,8 @@ function buildDashboard_(ss, sh) {
 
   // ── 7. Блоки
   blocks.forEach(b => writeDashBlock_(sh, b, pos[b.key], colRange));
+  // Іменовані діапазони блоків — їх читає застосунок.
+  blocks.forEach(b => ss.setNamedRange(NR + 'DB_' + b.key, sh.getRange(pos[b.key].top, 2, b.n, Math.max(1, b.cols.length))));
 
   // Умовне форматування блоків.
   const p = pos.var;
@@ -4270,6 +4273,290 @@ const STMT_HTML = String.raw`<!DOCTYPE html>
       go(4);
     }).withFailureHandler(fail).statementImport(items, $('acc').value);
   }
+</script></body></html>`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API ДЛЯ ЗАСТОСУНКУ (PWA)
+// Веб-застосунок Apps Script: Розгорнути → Нове розгортання → Веб-застосунок
+// («Виконувати від мого імені», доступ «Усі»). Кожен запит перевіряється ключем.
+// ─────────────────────────────────────────────────────────────────────────────
+const APP_URL = 'https://oleksii-rad-personal.github.io/Test/';
+const APP = { propKey: 'BT_APP_KEY', propApi: 'BT_APP_API', source: 'застосунок', recent: 40,
+  blocks: ['Inc', 'Reg', 'Subs', 'Var', 'Debt', 'Sav'] };
+
+function doGet() {
+  return ContentService.createTextOutput('Трекер бюджету: API працює ✓ Повернись у таблицю й встав цю адресу в «Підключити застосунок».');
+}
+
+function doPost(e) {
+  let out;
+  try {
+    const req = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const props = PropertiesService.getDocumentProperties();
+    const key = props.getProperty(APP.propKey);
+    if (!key || req.key !== key) throw new Error('Невірний ключ. Відкрий у таблиці «Підключити застосунок» і відскануй QR ще раз.');
+    out = { ok: true, data: appDispatch_(req) };
+  } catch (err) {
+    out = { ok: false, error: (err && err.message) || String(err) };
+  }
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function appSpreadsheet_() {
+  let ss = null;
+  try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { ss = null; }
+  if (!ss) ss = SpreadsheetApp.openById(PropertiesService.getDocumentProperties().getProperty('BT_DOC_ID'));
+  return ss;
+}
+
+function appDispatch_(req) {
+  const ss = appSpreadsheet_();
+  if (!ss.getSheetByName(SHEETS.ops) || !ss.getRangeByName(NR + 'D_Free')) {
+    throw new Error('Трекер у таблиці ще не побудовано: меню «Трекер» → «Побудувати трекер з нуля».');
+  }
+  applyProfileTheme_();
+  switch (req.action) {
+    case 'state': return appState_(ss);
+    case 'addOp': appAddOp_(ss, req.op || {}); return appState_(ss);
+    case 'deleteOp': appDeleteOp_(ss, req.row, req.op || {}); return appState_(ss);
+    case 'getSettings': return appGetSettings_(ss);
+    case 'saveSettings': appSaveSettings_(ss, req.block, req.rows || []); return appGetSettings_(ss);
+    case 'quizHtml': return { html: quizHtml_() };
+    case 'quiz': quizSubmit(req.profile || {}, 'save', req.apply !== false); return appState_(ss);
+    default: throw new Error('Невідома дія: ' + req.action);
+  }
+}
+
+/** Усе для головного екрана одним запитом. Цифри — з формул дашборду. */
+function appState_(ss) {
+  const tz = ss.getSpreadsheetTimeZone();
+  const iso = v => (v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : (v === null || v === undefined ? '' : v));
+  const period = ss.getRangeByName(NR + 'D_Period');
+  if (period && period.getValue() !== REF.current) { period.setValue(REF.current); SpreadsheetApp.flush(); }
+  const g = k => { const r = ss.getRangeByName(NR + k); return r ? r.getValue() : ''; };
+  const num = v => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0);
+  const block = (key, f) => {
+    const r = ss.getRangeByName(NR + 'DB_' + key);
+    return r ? r.getValues().filter(v => v[0] !== '' && v[0] !== null).map(f) : [];
+  };
+  const p = profile_();
+  const lists = {};
+  Object.keys(TYPE_LIST).forEach(t => { lists[t] = listValues_(ss, TYPE_LIST[t]); });
+
+  const sh = ss.getSheetByName(SHEETS.ops);
+  const ops = sh.getRange(2, 1, DATA_ROWS - 1, OPS_HEADERS.length).getValues()
+    .map((r, i) => ({ row: i + 2, date: iso(r[OPS.date - 1]), type: r[OPS.type - 1], amount: Number(r[OPS.amount - 1]) || 0,
+      category: r[OPS.category - 1], account: r[OPS.account - 1], comment: r[OPS.comment - 1], source: r[OPS.source - 1] }))
+    .filter(o => o.amount > 0)
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.row - a.row))
+    .slice(0, APP.recent);
+
+  return {
+    profile: { name: p.name || '', gender: p.gender || '' },
+    theme: THEMES[p.gender === 'f' ? 'f' : 'm'],
+    today: todayIso_(ss),
+    free: num(g('D_Free')), status: g('C_Status'), isCurrent: g('C_IsCur') === true,
+    nextPay: iso(g('C_Next')), days: num(g('C_Days')), limit: num(g('C_Limit')), avg: num(g('C_Avg')),
+    cycle: { start: iso(g('C_Start')), end: iso(g('C_End')) },
+    calc: dashCalcLines_(() => '').map(c => ({ label: c.label, value: num(g(c.key)), total: !!c.bold })),
+    budgets: block('var', v => ({ name: v[0], budget: num(v[1]), fact: num(v[2]) })),
+    regular: block('reg', v => ({ name: v[0], amount: num(v[1]), date: iso(v[2]), paid: num(v[3]), done: v[4] === '✓', left: num(v[6]) })),
+    subs: block('subs', v => ({ name: v[0], amount: num(v[1]), date: iso(v[2]), paid: num(v[3]), done: v[4] === '✓', left: num(v[6]) })),
+    types: REF.types, lists: lists, accounts: listValues_(ss, 'L_Acc'),
+    ops: ops, sheetUrl: ss.getUrl(),
+  };
+}
+
+function appAddOp_(ss, op) {
+  const amount = Math.round(Number(String(op.amount).replace(',', '.')) * 100) / 100;
+  if (!(amount > 0)) throw new Error('Сума має бути більшою за нуль.');
+  const type = REF.types.indexOf(op.type) !== -1 ? op.type : TYPES.expense;
+  const date = /^\d{4}-\d\d-\d\d$/.test(op.date || '') ? op.date : todayIso_(ss);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const sh = ss.getSheetByName(SHEETS.ops);
+    // Повторна відправка з офлайн-черги не має дублювати рядок.
+    if (op.id) {
+      const tags = sh.getRange(2, OPS.source, DATA_ROWS - 1, 1).getValues();
+      if (tags.some(v => v[0] === APP.source + ' ' + op.id)) return;
+    }
+    const row = firstFreeOpsRow_(sh);
+    if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 100);
+    writeOpsRows_(sh, row, [[date, type, amount, String(op.category || '').slice(0, 60), String(op.account || '').slice(0, 40),
+      String(op.comment || '').slice(0, 200), APP.source + (op.id ? ' ' + String(op.id).slice(0, 40) : '')]]);
+    SpreadsheetApp.flush();
+    syncCategoriesFromOps_(ss);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Видаляє операцію, внесену із застосунку (рядок звіряється за сумою й міткою). */
+function appDeleteOp_(ss, row, op) {
+  const sh = ss.getSheetByName(SHEETS.ops);
+  const n = DATA_ROWS - 1;
+  const rng = sh.getRange(2, 1, n, OPS_HEADERS.length);
+  const vals = rng.getValues();
+  const i = Number(row) - 2;
+  const r = vals[i];
+  if (!r || String(r[OPS.source - 1]).indexOf(APP.source) !== 0 || Math.abs(Number(r[OPS.amount - 1]) - Number(op.amount)) > 0.005) {
+    throw new Error('Цю операцію можна видалити лише в таблиці.');
+  }
+  vals.splice(i, 1);
+  vals.push(new Array(OPS_HEADERS.length).fill(''));
+  writeOpsRows_(sh, 2, vals);
+  SpreadsheetApp.flush();
+}
+
+function appGetSettings_(ss) {
+  const tz = ss.getSpreadsheetTimeZone();
+  const iso = v => (v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : v);
+  const options = {};
+  const blocks = APP.blocks.map(key => {
+    const b = SETTINGS_BLOCKS.filter(x => x.key === key)[0];
+    const cols = b.cols.filter(c => c.t !== 'f').map(c => {
+      let t = c.t, list = '';
+      if (t.indexOf('list:') === 0) {
+        list = t.split(':')[1]; t = 'list';
+        if (!options[list]) options[list] = listValues_(ss, list === 'L_Freq' ? 'L_FreqName' : list);
+      }
+      return { key: c.key, h: c.h, t: t, list: list };
+    });
+    const data = {};
+    cols.forEach(c => { data[c.key] = ss.getRangeByName(NR + key + '_' + c.key).getValues().map(v => iso(v[0])); });
+    const rows = [];
+    for (let i = 0; i < b.rows; i++) {
+      if (String(data.Name[i] || '').trim() === '') continue;
+      const o = {};
+      cols.forEach(c => { o[c.key] = data[c.key][i]; });
+      rows.push(o);
+    }
+    return { key: key, title: b.title, hint: b.hint, max: b.rows, cols: cols, rows: rows };
+  });
+  return { blocks: blocks, options: options };
+}
+
+function appSaveSettings_(ss, key, rows) {
+  if (APP.blocks.indexOf(key) === -1) throw new Error('Невідомий блок налаштувань.');
+  const b = SETTINGS_BLOCKS.filter(x => x.key === key)[0];
+  const clean = rows.filter(r => r && String(r.Name || '').trim() !== '').slice(0, b.rows).map(r => {
+    const o = {};
+    b.cols.forEach(c => {
+      if (c.t === 'f') return;
+      let v = r[c.key];
+      if (v === undefined || v === null) v = c.t === 'check' ? false : '';
+      if (c.t === 'check') v = v === true;
+      else if (['money', 'pct', 'int', 'day'].indexOf(c.t) !== -1) v = v === '' ? '' : Number(v);
+      else v = String(v).slice(0, 80);
+      o[c.key] = v;
+    });
+    return o;
+  });
+  if (key === 'Inc' && clean.length && clean.filter(r => r.Main).length !== 1) {
+    clean.forEach((r, i) => { r.Main = i === 0; });
+  }
+  setBlockRows_(ss, key, clean);
+  SpreadsheetApp.flush();
+  syncCategoriesFromOps_(ss);
+}
+
+// ── Підключення застосунку з таблиці
+function appKey_(reset) {
+  const props = PropertiesService.getDocumentProperties();
+  let key = props.getProperty(APP.propKey);
+  if (!key || reset) {
+    key = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').slice(0, 40);
+    props.setProperty(APP.propKey, key);
+  }
+  return key;
+}
+
+function appLink_() {
+  const api = PropertiesService.getDocumentProperties().getProperty(APP.propApi) || '';
+  return api ? APP_URL + '?api=' + encodeURIComponent(api) + '&key=' + appKey_(false) : '';
+}
+
+/** З діалогу: зберегти адресу веб-застосунку (reset — заодно новий ключ). */
+function appSaveApi(url, reset) {
+  const u = String(url || '').trim();
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/[-\w]+\/exec$/.test(u)) {
+    throw new Error('Адреса має виглядати як https://script.google.com/macros/s/…/exec');
+  }
+  PropertiesService.getDocumentProperties().setProperty(APP.propApi, u);
+  if (reset) appKey_(true);
+  return appLink_();
+}
+
+/** Меню: підключити застосунок на телефоні. */
+function showConnectApp() {
+  ensureOwnDocument_();
+  applyProfileTheme_();
+  appKey_(false);
+  const props = PropertiesService.getDocumentProperties();
+  let api = props.getProperty(APP.propApi) || '';
+  if (!api) { try { const u = ScriptApp.getService().getUrl(); if (u && /\/exec$/.test(u)) api = u; } catch (e) { /* не розгорнуто */ } }
+  const data = { api: api, link: appLink_(), theme: THEME };
+  const html = HtmlService.createHtmlOutput(CONNECT_HTML
+    .replace('__QRLIB__', () => QR_LIB)
+    .replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c'))).setWidth(560).setHeight(680);
+  SpreadsheetApp.getUi().showModalDialog(html, '📱 Застосунок на телефон');
+}
+
+const CONNECT_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
+<style>
+  :root { --p:#4F86B5; --bg:#E5F1FA; --t:#2C5677; --muted:#8A9BAA; }
+  body { font-family:Arial, sans-serif; color:#2E3A46; margin:0; padding:16px 20px; font-size:14px; line-height:1.5; }
+  h2 { color:var(--t); font-size:17px; margin:14px 0 6px; }
+  ol { margin:0 0 8px; padding-left:20px; } li { margin-bottom:4px; }
+  input { width:100%; box-sizing:border-box; padding:10px 12px; border:2px solid #E7EBF0; border-radius:10px; font-size:13px; }
+  .btn { border:none; border-radius:10px; padding:10px 16px; font-weight:bold; font-size:14px; cursor:pointer; background:var(--p); color:#fff; margin-top:8px; }
+  .btn.soft { background:var(--bg); color:var(--t); }
+  .box { background:var(--bg); border-radius:14px; padding:12px 14px; margin-top:10px; }
+  .qr { text-align:center; } .qr svg { width:190px; height:190px; }
+  .link { font-size:11px; word-break:break-all; color:var(--muted); }
+  .err { color:#D9534F; font-weight:bold; min-height:18px; }
+  .warn { font-size:12px; color:var(--muted); margin-top:8px; }
+</style></head><body>
+<h2>1. Увімкни доступ для застосунку (один раз)</h2>
+<ol>
+  <li>«Розширення» → «Apps Script» → справа вгорі <b>«Розгорнути» → «Нове розгортання»</b>.</li>
+  <li>Тип (шестерня) — <b>«Веб-застосунок»</b>. «Виконувати як» — <b>я</b>. «Хто має доступ» — <b>усі</b>.</li>
+  <li>«Розгорнути» → дозволь доступ → скопіюй <b>URL веб-застосунку</b> (закінчується на /exec).</li>
+</ol>
+<input id="api" placeholder="https://script.google.com/macros/s/…/exec">
+<div class="err" id="err"></div>
+<button class="btn" onclick="save(false)">Зберегти адресу</button>
+<div id="step2" style="display:none">
+  <h2>2. Відкрий застосунок на телефоні</h2>
+  <div class="box"><div class="qr" id="qr"></div>
+    <div>Наведи камеру телефона на QR-код. Застосунок відкриється вже підключеним — додай його на головний екран («Поділитися» → «На початковий екран»).</div>
+    <div class="link" id="link"></div>
+    <button class="btn soft" onclick="copy()">Скопіювати посилання</button>
+    <button class="btn soft" onclick="save(true)">Скинути ключ</button>
+  </div>
+  <div class="warn">Посилання містить ключ доступу до твого бюджету — не публікуй його. Якщо воно потрапило не туди, натисни «Скинути ключ» і відскануй новий QR.</div>
+</div>
+<script>
+__QRLIB__
+</script>
+<script>
+  const D = __DATA__;
+  (function () { const r = document.documentElement.style, t = D.theme; r.setProperty('--p', t.primary); r.setProperty('--bg', t.headerBg); r.setProperty('--t', t.headerTxt); })();
+  const $ = id => document.getElementById(id);
+  $('api').value = D.api || '';
+  function show(link) {
+    if (!link) return;
+    const q = qrcode(0, 'L'); q.addData(link); q.make();
+    $('qr').innerHTML = q.createSvgTag({ cellSize: 3, margin: 2, scalable: true });
+    $('link').textContent = link; $('step2').style.display = 'block'; D.link = link;
+  }
+  function save(reset) {
+    $('err').textContent = '';
+    google.script.run.withSuccessHandler(show).withFailureHandler(e => { $('err').textContent = (e && e.message) || String(e); }).appSaveApi($('api').value, reset);
+  }
+  function copy() { const t = document.createElement('textarea'); t.value = D.link; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+  show(D.link);
 </script></body></html>`;
 
 // ─────────────────────────────────────────────────────────────────────────────

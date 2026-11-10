@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Трекер бюджету</title>
+  <meta name="theme-color" content="#4F86B5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Трекер">
+  <link rel="manifest" id="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="app">
+    <main id="main"></main>
+    <nav id="nav" hidden>
+      <button data-view="home"><span>🏠</span>Головна</button>
+      <button data-view="ops"><span>🧾</span>Операції</button>
+      <button data-view="add" class="plus" aria-label="Додати операцію">＋</button>
+      <button data-view="settings"><span>⚙️</span>Налаштування</button>
+    </nav>
+  </div>
+  <div id="toast" hidden></div>
+  <div id="overlay" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
