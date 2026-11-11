@@ -4495,46 +4495,6 @@ function appSaveApi(url, reset) {
   return appLink_();
 }
 
-/**
- * З діалогу: перевірити веб-застосунок так само, як його бачить телефон —
- * анонімний POST без входу в Google. Повертає { ok, msg } зрозумілою мовою.
- */
-function appTestApi() {
-  const api = PropertiesService.getDocumentProperties().getProperty(APP.propApi) || '';
-  if (!api) return { ok: false, msg: 'Спершу встав адресу веб-застосунку і натисни «Зберегти адресу».' };
-  let code = 0, body = '', getText = '';
-  try {
-    // Як браузер: POST → 302 → GET за адресою з Location (так відповідає Apps Script).
-    let r = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain;charset=utf-8',
-      payload: JSON.stringify({ key: appKey_(false), action: 'ping' }), muteHttpExceptions: true, followRedirects: false });
-    code = r.getResponseCode();
-    const h = r.getHeaders() || {}, loc = h.Location || h.location;
-    if (code >= 300 && code < 400 && loc) { r = UrlFetchApp.fetch(loc, { muteHttpExceptions: true, followRedirects: true }); code = r.getResponseCode(); }
-    body = r.getContentText() || '';
-    try { getText = UrlFetchApp.fetch(api, { muteHttpExceptions: true, followRedirects: true }).getContentText() || ''; } catch (e) { getText = ''; }
-  } catch (e) {
-    return { ok: false, msg: 'Не вдалося звернутися до адреси: ' + e.message };
-  }
-  let j = null;
-  try { j = JSON.parse(body); } catch (e) { j = null; }
-  const redeploy = '«Розгорнути» → «Керувати розгортаннями» → олівець ✏️ → Версія: «Нова версія» → «Розгорнути».';
-  if (j && j.ok) return { ok: true, msg: '✓ Звʼязок працює. Онови застосунок на телефоні (потягни сторінку вниз).' };
-  if (j && /Невідома дія/.test(j.error || '')) return { ok: false, msg: 'Розгортання працює на старій версії коду. ' + redeploy };
-  if (j) return { ok: false, msg: 'Скрипт відповів помилкою: ' + j.error };
-  if (/accounts\.google\.com|ServiceLogin|signin/i.test(body) || code === 401 || code === 403) {
-    return { ok: false, msg: 'Google не пускає застосунок без входу. ' + redeploy.replace('Версія: «Нова версія»', '«Хто має доступ»: «Усі» (Anyone), «Виконувати як»: «Я», Версія: «Нова версія»') +
-      ' Якщо варіанта «Усі» немає — таблиця в робочому акаунті, де це заборонив адміністратор: зроби копію таблиці в особистому Gmail.' };
-  }
-  if (/doPost/.test(body)) return { ok: false, msg: 'У розгортанні немає потрібного коду. ' + redeploy };
-  const getOk = /API працює/.test(getText);
-  const tail = ' (перевірена адреса закінчується на …' + api.replace(/\/exec$/, '').slice(-6) + '/exec)';
-  const snippet = t => t.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-  if (code === 404) return { ok: false, msg: (getOk ? 'Сторінка API відкривається, але запит застосунку отримує 404. ' : 'Адресу не знайдено (404). ') +
-    'Найчастіше так буває, коли «Хто має доступ» — не «Усі», або таблиця в робочому акаунті з обмеженнями. ' + redeploy.replace('Версія: «Нова версія»', '«Хто має доступ»: «Усі»') +
-    ' Відповідь Google: ' + snippet(body) + tail };
-  return { ok: false, msg: 'Неочікувана відповідь (код ' + code + '): ' + snippet(body) };
-}
-
 /** Меню: підключити застосунок на телефоні. */
 function showConnectApp() {
   ensureOwnDocument_();
@@ -4604,10 +4564,25 @@ __QRLIB__
     $('err').textContent = '';
     google.script.run.withSuccessHandler(l => { show(l); test(); }).withFailureHandler(e => { $('err').textContent = (e && e.message) || String(e); }).appSaveApi($('api').value, reset);
   }
-  function test() {
-    const b = $('test'); b.style.display = 'block'; b.style.color = ''; b.textContent = 'Перевіряю… (до 30 секунд)';
-    google.script.run.withSuccessHandler(r => { b.textContent = r.msg; b.style.color = r.ok ? '#2E7D32' : '#C0392B'; })
-      .withFailureHandler(e => { b.textContent = (e && e.message) || String(e); b.style.color = '#C0392B'; }).appTestApi();
+  // Перевірка з браузера — так само, як звертається застосунок на телефоні.
+  async function test() {
+    const b = $('test'); b.style.display = 'block'; b.style.color = ''; b.textContent = 'Перевіряю…';
+    const say = (ok, msg) => { b.textContent = msg; b.style.color = ok ? '#2E7D32' : '#C0392B'; };
+    let q;
+    try { q = new URL(D.link).searchParams; } catch (e) { return say(false, 'Спершу встав адресу веб-застосунку і натисни «Зберегти адресу».'); }
+    const redeploy = '«Розгорнути» → «Керувати розгортаннями» → олівець ✏️ → «Хто має доступ»: «Усі», Версія: «Нова версія» → «Розгорнути».';
+    try {
+      const r = await fetch(q.get('api'), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ key: q.get('key'), action: 'ping' }) });
+      const t = await r.text(); let j = null;
+      try { j = JSON.parse(t); } catch (e) { j = null; }
+      if (j && j.ok) return say(true, '✓ Звʼязок працює. Відскануй QR телефоном (або онови застосунок, якщо QR не змінювався).');
+      if (j && /Невідома дія/.test(j.error || '')) return say(false, 'Розгортання працює на старій версії коду. ' + redeploy);
+      if (j) return say(false, 'Скрипт відповів: ' + j.error);
+      return say(false, 'Google повернув сторінку замість даних (код ' + r.status + '). ' + redeploy);
+    } catch (e) {
+      say(false, 'Відповіді немає. Перевір, що адреса збережена саме з розгортання, де «Хто має доступ» — «Усі». ' + redeploy);
+    }
   }
   function copy() { const t = document.createElement('textarea'); t.value = D.link; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
   show(D.link);
