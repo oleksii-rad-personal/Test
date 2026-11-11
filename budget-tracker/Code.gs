@@ -1063,7 +1063,8 @@ function buildDashboard_(ss, sh) {
   });
   sh.getRange(DASH.sentenceRow, 2, 1, DASH.cols).merge().setFormula(X_(
     '=IF(@C_Status="empty","Додай дохід в «Операції» — і тут з\'явиться твоя цифра.",' +
-    'IF(@C_IsCur,IF(@D_Free<0,"⚠ Перевитрата на "&FIXED(-@D_Free,0)&" грн. Подивись блок «Змінні» нижче.",' +
+    'IF(@C_IsCur,IF(@D_Free<0,IF(SUM(' + colRange('inc', 'F') + ')>0,"⚠ Мінус, бо дохід циклу ще не внесено. Зарплата вже прийшла? Внеси її в «Операції».",' +
+    '"⚠ Перевитрата на "&FIXED(-@D_Free,0)&" грн. Подивись блок «Змінні» нижче."),' +
     '"' + nameComma_() + '≈ "&FIXED(@C_Limit,0)&" грн на день, "&@C_Days&" дн. до виплати"&' +
     'IF(@C_Limit>=@C_Avg," — ти в нормі 💚"," — менше, ніж ти зазвичай витрачаєш ("&FIXED(@C_Avg,0)&" грн/день)")),' +
     'IF(@C_Past,"Цикл завершено — це залишок на його кінець.","Цей цикл ще не почався.")))'))
@@ -4340,12 +4341,12 @@ function appState_(ss) {
   const iso = v => (v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : (v === null || v === undefined ? '' : v));
   const period = ss.getRangeByName(NR + 'D_Period');
   if (period && period.getValue() !== REF.current) { period.setValue(REF.current); SpreadsheetApp.flush(); }
-  const g = k => { const r = ss.getRangeByName(NR + k); return r ? r.getValue() : ''; };
+  const R = namedReader_(ss);
+  const g = k => R.val(NR + k);
   const num = v => (typeof v === 'number' ? Math.round(v * 100) / 100 : 0);
-  const block = (key, f) => {
-    const r = ss.getRangeByName(NR + 'DB_' + key);
-    return r ? r.getValues().filter(v => v[0] !== '' && v[0] !== null).map(f) : [];
-  };
+  const block = (key, f) => (R.vals(NR + 'DB_' + key) || []).filter(v => v[0] !== '' && v[0] !== null).map(f);
+  const dash = ss.getSheetByName(SHEETS.dash);
+  const expect = dash ? String(dash.getRange(DASH.expectRow, 2).getDisplayValue() || '') : '';
   const p = profile_();
   const lists = {};
   Object.keys(TYPE_LIST).forEach(t => { lists[t] = listValues_(ss, TYPE_LIST[t]); });
@@ -4370,8 +4371,28 @@ function appState_(ss) {
     regular: block('reg', v => ({ name: v[0], amount: num(v[1]), date: iso(v[2]), paid: num(v[3]), done: v[4] === '✓', left: num(v[6]) })),
     subs: block('subs', v => ({ name: v[0], amount: num(v[1]), date: iso(v[2]), paid: num(v[3]), done: v[4] === '✓', left: num(v[6]) })),
     types: REF.types, lists: lists, accounts: listValues_(ss, 'L_Acc'),
-    ops: ops, sheetUrl: ss.getUrl(),
+    ops: ops, sheetUrl: ss.getUrl(), expect: expect,
   };
+}
+
+/** Читання багатьох іменованих діапазонів за кілька викликів: один getValues на аркуш. */
+function namedReader_(ss) {
+  const map = {};
+  ss.getNamedRanges().forEach(n => { map[n.getName()] = n.getRange(); });
+  const grids = {};
+  const grid = sh => { const k = sh.getName(); return grids[k] || (grids[k] = sh.getDataRange().getValues()); };
+  const vals = name => {
+    const r = map[name];
+    if (!r) return null;
+    const gr = grid(r.getSheet()), r0 = r.getRow() - 1, c0 = r.getColumn() - 1, out = [];
+    for (let i = 0; i < r.getNumRows(); i++) {
+      const row = gr[r0 + i] || [], line = [];
+      for (let j = 0; j < r.getNumColumns(); j++) line.push(row[c0 + j] === undefined ? '' : row[c0 + j]);
+      out.push(line);
+    }
+    return out;
+  };
+  return { vals: vals, val: name => { const v = vals(name); return v ? v[0][0] : ''; } };
 }
 
 function appAddOp_(ss, op) {
@@ -4392,8 +4413,9 @@ function appAddOp_(ss, op) {
     if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 100);
     writeOpsRows_(sh, row, [[date, type, amount, String(op.category || '').slice(0, 60), String(op.account || '').slice(0, 40),
       String(op.comment || '').slice(0, 200), APP.source + (op.id ? ' ' + String(op.id).slice(0, 40) : '')]]);
-    SpreadsheetApp.flush();
-    syncCategoriesFromOps_(ss);
+    // Нова категорія (рідко) — додати її в «Налаштування»; звичайна — нічого не робити.
+    const cat = String(op.category || '').trim();
+    if (cat && TYPE_LIST[type] && listValues_(ss, TYPE_LIST[type]).indexOf(cat) === -1) { SpreadsheetApp.flush(); syncCategoriesFromOps_(ss); }
   } finally {
     lock.releaseLock();
   }

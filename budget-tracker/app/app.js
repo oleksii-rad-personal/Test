@@ -91,6 +91,7 @@
       '<p class="sub">Застосунок працює з твоєю Google-таблицею трекера. Підключи його один раз:</p>' +
       '<ol class="steps"><li>Відкрий таблицю на компʼютері → меню <b>«Трекер» → «📱 Підключити застосунок на телефон»</b>.</li>' +
       '<li>Виконай кроки з вікна і <b>наведи камеру телефона на QR-код</b> — застосунок відкриється вже підключеним.</li></ol>' +
+      (isIos && standalone ? '<div class="banner">Іконка на iPhone не бачить даних Safari. Відкрий застосунок у Safari → «Налаштування» → «📋 Скопіювати посилання для іконки» і встав його сюди.</div>' : '') +
       '<label class="f">Або встав посилання з того вікна</label><input id="lnk" placeholder="https://…?api=…&key=…" autocomplete="off">' +
       '<div style="height:10px"></div><button class="btn" id="go">Підключити</button>';
     $('#go').onclick = () => {
@@ -113,9 +114,10 @@
       h += '<div class="num" style="font-size:26px">Внеси перший дохід</div><div class="hint">Натисни ＋ і додай зарплату — тут зʼявиться твоя цифра</div>';
     } else {
       h += '<div class="num">' + money(s.free + pend) + '</div><div class="hint">' +
-        (s.free + pend < 0 ? '⚠ Перевитрата — пригальмуй до виплати'
+        (s.free + pend < 0 ? (s.expect ? '⚠ Мінус, бо дохід циклу ще не внесено. Зарплата вже прийшла? Натисни ＋ → Дохід' : '⚠ Перевитрата — пригальмуй до виплати')
           : s.status === 'bad' ? 'Менше, ніж ти зазвичай витрачаєш (' + money(s.avg) + ' / день)' : 'Ти в нормі 💚') + '</div>';
     }
+    if (s.expect) h += '<div class="hint" style="font-size:12px;font-weight:600;opacity:.75;margin-top:6px">' + esc(s.expect) + '</div>';
     h += '</div><div class="pills"><div class="pill"><b>' + money(Math.round(s.days ? (s.free + pend) / Math.max(1, s.days) : s.limit)) + '</b><span>на день</span></div>' +
       '<div class="pill"><b>' + (s.days || '—') + '</b><span>днів до виплати</span></div>' +
       '<div class="pill"><b>' + (dm(s.nextPay) || '—') + '</b><span>наступна виплата</span></div></div>';
