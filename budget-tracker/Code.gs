@@ -4527,10 +4527,11 @@ function appTestApi() {
   }
   if (/doPost/.test(body)) return { ok: false, msg: 'У розгортанні немає потрібного коду. ' + redeploy };
   const getOk = /API працює/.test(getText);
+  const tail = ' (перевірена адреса закінчується на …' + api.replace(/\/exec$/, '').slice(-6) + '/exec)';
   const snippet = t => t.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
   if (code === 404) return { ok: false, msg: (getOk ? 'Сторінка API відкривається, але запит застосунку отримує 404. ' : 'Адресу не знайдено (404). ') +
     'Найчастіше так буває, коли «Хто має доступ» — не «Усі», або таблиця в робочому акаунті з обмеженнями. ' + redeploy.replace('Версія: «Нова версія»', '«Хто має доступ»: «Усі»') +
-    ' Відповідь Google: ' + snippet(body) };
+    ' Відповідь Google: ' + snippet(body) + tail };
   return { ok: false, msg: 'Неочікувана відповідь (код ' + code + '): ' + snippet(body) };
 }
 
