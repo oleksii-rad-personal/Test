@@ -275,7 +275,13 @@ const SEEDS = {
 // ─────────────────────────────────────────────────────────────────────────────
 function onOpen() {
   try { ensureOwnDocument_(); } catch (e) { /* простий тригер може не мати доступу */ }
-  SpreadsheetApp.getUi()
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch (e) {
+    // Запуск кнопкою «Виконати» в редакторі: меню тут не створити — воно зʼявляється в самій таблиці.
+    Logger.log('Меню «Трекер» зʼявляється в таблиці: закрий редактор і онови вкладку з таблицею (F5).');
+    return;
+  }
+  ui
     .createMenu(menuTitle_())
     .addItem('👋 Мій профіль (квіз)', 'showQuiz')
     .addItem('📖 Як користуватись', 'showGuide')
