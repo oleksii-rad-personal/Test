@@ -4570,7 +4570,10 @@ __QRLIB__
     const say = (ok, msg) => { b.textContent = msg; b.style.color = ok ? '#2E7D32' : '#C0392B'; };
     let q;
     try { q = new URL(D.link).searchParams; } catch (e) { return say(false, 'Спершу встав адресу веб-застосунку і натисни «Зберегти адресу».'); }
-    const redeploy = '«Розгорнути» → «Керувати розгортаннями» → олівець ✏️ → «Хто має доступ»: «Усі», Версія: «Нова версія» → «Розгорнути».';
+    const typed = $('api').value.trim();
+    if (typed && typed !== q.get('api')) return say(false, 'Адреса в полі ще не збережена — натисни «Зберегти адресу» (перевірка запуститься сама).');
+    const tail = ' Перевірено адресу, що закінчується на …' + q.get('api').replace(/\/exec$/, '').slice(-6) + '/exec — вона має збігатися з «Web app URL» активного розгортання.';
+    const redeploy = '«Розгорнути» → «Керувати розгортаннями» → олівець ✏️ → «Хто має доступ»: «Усі», Версія: «Нова версія» → «Розгорнути».' + tail;
     try {
       const r = await fetch(q.get('api'), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ key: q.get('key'), action: 'ping' }) });
@@ -4579,6 +4582,7 @@ __QRLIB__
       if (j && j.ok) return say(true, '✓ Звʼязок працює. Відскануй QR телефоном (або онови застосунок, якщо QR не змінювався).');
       if (j && /Невідома дія/.test(j.error || '')) return say(false, 'Розгортання працює на старій версії коду. ' + redeploy);
       if (j) return say(false, 'Скрипт відповів: ' + j.error);
+      if (r.status === 404) return say(false, 'Google каже, що такого розгортання немає (404) — найчастіше це адреса архівованого або старого розгортання. Скопіюй «Web app URL» з активного розгортання, встав у поле і натисни «Зберегти адресу».' + tail);
       return say(false, 'Google повернув сторінку замість даних (код ' + r.status + '). ' + redeploy);
     } catch (e) {
       say(false, 'Відповіді немає. Перевір, що адреса збережена саме з розгортання, де «Хто має доступ» — «Усі». ' + redeploy);
