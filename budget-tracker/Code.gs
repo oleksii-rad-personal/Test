@@ -850,7 +850,7 @@ function insertStartButtons_(sh) {
       img.setWidth(250).setHeight(50).assignScript(b[1]);
       try { img.setAltTextTitle(b[2]); } catch (e) { /* не критично */ }
     });
-    sh.getRange(5 + START_BUTTONS.length * 2, 4).setValue('Кнопки працюють на компʼютері. На телефоні — меню «Трекер».')
+    sh.getRange(6 + START_BUTTONS.length * 2, 4).setValue('Кнопки працюють на компʼютері. На телефоні — меню «Трекер».')
       .setFontColor(THEME.muted).setFontStyle('italic').setFontSize(9).setWrap(true);
   } catch (e) {
     Logger.log('Кнопки на «Старті» не вставлено: ' + e.message);
