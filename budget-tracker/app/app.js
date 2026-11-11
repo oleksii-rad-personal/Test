@@ -54,13 +54,18 @@
     document.querySelector('meta[name=theme-color]').setAttribute('content', t.primary);
   }
   let toastT = null;
-  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 3200); }
+  function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, msg.length > 60 ? 7000 : 3200); }
 
+  // Інтернет є, а таблиця не відповідає — найчастіше це доступ у розгортанні веб-застосунку.
+  function offlineMsg() {
+    return navigator.onLine === false ? 'Немає інтернету — показую збережені дані'
+      : 'Таблиця не відповідає. У таблиці: «Трекер» → «📱 Підключити застосунок» → «Перевірити звʼязок»';
+  }
   async function refresh(silent) {
     if (!conn || busy) return;
     busy = true;
     try { await flush(); setState(await api('state')); if (view !== 'add' && view !== 'settings') render(); }
-    catch (e) { if (!silent || e.api) toast(e.api ? e.message : 'Немає звʼязку — показую збережені дані'); }
+    catch (e) { if (!silent || e.api) toast(e.api ? e.message : offlineMsg()); }
     finally { busy = false; }
   }
   // Офлайн-черга: операції, які ще не дійшли до таблиці.

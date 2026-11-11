@@ -4229,7 +4229,7 @@ const STMT_HTML = String.raw`<!DOCTYPE html>
   }
   function preview(rows) {
     go(2); $('loadTxt').textContent = 'Розкладаю по категоріях…';
-    google.script.run.withSuccessHandler(show).withFailureHandler(fail).statementPreview(rows);
+    google.script.run.withSuccessHandler(l => { show(l); test(); }).withFailureHandler(fail).statementPreview(rows);
   }
 
   // ── Попередній перегляд
@@ -4316,6 +4316,7 @@ function appSpreadsheet_() {
 }
 
 function appDispatch_(req) {
+  if (req.action === 'ping') return { pong: true };
   const ss = appSpreadsheet_();
   if (!ss.getSheetByName(SHEETS.ops) || !ss.getRangeByName(NR + 'D_Free')) {
     throw new Error('Трекер у таблиці ще не побудовано: меню «Трекер» → «Побудувати трекер з нуля».');
@@ -4494,6 +4495,36 @@ function appSaveApi(url, reset) {
   return appLink_();
 }
 
+/**
+ * З діалогу: перевірити веб-застосунок так само, як його бачить телефон —
+ * анонімний POST без входу в Google. Повертає { ok, msg } зрозумілою мовою.
+ */
+function appTestApi() {
+  const api = PropertiesService.getDocumentProperties().getProperty(APP.propApi) || '';
+  if (!api) return { ok: false, msg: 'Спершу встав адресу веб-застосунку і натисни «Зберегти адресу».' };
+  let code = 0, body = '';
+  try {
+    const r = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain;charset=utf-8',
+      payload: JSON.stringify({ key: appKey_(false), action: 'ping' }), muteHttpExceptions: true, followRedirects: true });
+    code = r.getResponseCode(); body = r.getContentText() || '';
+  } catch (e) {
+    return { ok: false, msg: 'Не вдалося звернутися до адреси: ' + e.message };
+  }
+  let j = null;
+  try { j = JSON.parse(body); } catch (e) { j = null; }
+  const redeploy = '«Розгорнути» → «Керувати розгортаннями» → олівець ✏️ → Версія: «Нова версія» → «Розгорнути».';
+  if (j && j.ok) return { ok: true, msg: '✓ Звʼязок працює. Онови застосунок на телефоні (потягни сторінку вниз).' };
+  if (j && /Невідома дія/.test(j.error || '')) return { ok: false, msg: 'Розгортання працює на старій версії коду. ' + redeploy };
+  if (j) return { ok: false, msg: 'Скрипт відповів помилкою: ' + j.error };
+  if (/accounts\.google\.com|ServiceLogin|signin/i.test(body) || code === 401 || code === 403) {
+    return { ok: false, msg: 'Google не пускає застосунок без входу. ' + redeploy.replace('Версія: «Нова версія»', '«Хто має доступ»: «Усі» (Anyone), «Виконувати як»: «Я», Версія: «Нова версія»') +
+      ' Якщо варіанта «Усі» немає — таблиця в робочому акаунті, де це заборонив адміністратор: зроби копію таблиці в особистому Gmail.' };
+  }
+  if (/doPost/.test(body)) return { ok: false, msg: 'У розгортанні немає потрібного коду. ' + redeploy };
+  if (code === 404) return { ok: false, msg: 'Адресу не знайдено (404): розгортання видалене або адреса скопійована не повністю.' };
+  return { ok: false, msg: 'Неочікувана відповідь (код ' + code + '): ' + body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) };
+}
+
 /** Меню: підключити застосунок на телефоні. */
 function showConnectApp() {
   ensureOwnDocument_();
@@ -4533,6 +4564,8 @@ const CONNECT_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta chars
 <input id="api" placeholder="https://script.google.com/macros/s/…/exec">
 <div class="err" id="err"></div>
 <button class="btn" onclick="save(false)">Зберегти адресу</button>
+<button class="btn soft" onclick="test()">Перевірити звʼязок</button>
+<div class="box" id="test" style="display:none"></div>
 <div id="step2" style="display:none">
   <h2>2. Відкрий застосунок на телефоні</h2>
   <div class="box"><div class="qr" id="qr"></div>
@@ -4559,7 +4592,12 @@ __QRLIB__
   }
   function save(reset) {
     $('err').textContent = '';
-    google.script.run.withSuccessHandler(show).withFailureHandler(e => { $('err').textContent = (e && e.message) || String(e); }).appSaveApi($('api').value, reset);
+    google.script.run.withSuccessHandler(l => { show(l); test(); }).withFailureHandler(e => { $('err').textContent = (e && e.message) || String(e); }).appSaveApi($('api').value, reset);
+  }
+  function test() {
+    const b = $('test'); b.style.display = 'block'; b.style.color = ''; b.textContent = 'Перевіряю… (до 30 секунд)';
+    google.script.run.withSuccessHandler(r => { b.textContent = r.msg; b.style.color = r.ok ? '#2E7D32' : '#C0392B'; })
+      .withFailureHandler(e => { b.textContent = (e && e.message) || String(e); b.style.color = '#C0392B'; }).appTestApi();
   }
   function copy() { const t = document.createElement('textarea'); t.value = D.link; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
   show(D.link);
