@@ -1,5 +1,5 @@
 // Кеш оболонки застосунку: працює офлайн, оновлюється у фоні.
-const CACHE = 'bt-shell-v2';
+const CACHE = 'bt-shell-v3';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest', 'manifest.ios.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

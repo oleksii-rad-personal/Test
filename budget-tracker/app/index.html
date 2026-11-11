@@ -9,7 +9,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Трекер">
-  <link rel="manifest" id="manifest" href="manifest.webmanifest">
+  <!-- iPhone: маніфест без start_url, щоб іконка памʼятала адресу з ключем (дані iOS-застосунку окремі від Safari) -->
+  <script>document.write('<link rel="manifest" id="manifest" href="' + (/iphone|ipad|ipod/i.test(navigator.userAgent) ? 'manifest.ios.webmanifest' : 'manifest.webmanifest') + '">');</script>
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="app.css">

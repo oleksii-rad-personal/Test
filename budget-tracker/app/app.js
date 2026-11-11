@@ -37,7 +37,7 @@
   if (fromUrl) { conn = fromUrl; save(LS.conn, conn); }
   // iPhone зберігає дані встановленого застосунку окремо від Safari, тому іконка має памʼятати
   // адресу з параметрами: на iOS — маніфест без start_url.
-  if (isIos) $('#manifest').setAttribute('href', 'manifest.ios.webmanifest');
+  if (isIos && $('#manifest')) $('#manifest').setAttribute('href', 'manifest.ios.webmanifest');
 
   async function api(action, extra) {
     const res = await fetch(conn.api, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -270,11 +270,18 @@
   function footer() {
     return '<h2>Ще</h2><button class="btn soft" id="quiz">👋 Пройти квіз заново</button>' +
       (st && st.sheetUrl ? '<button class="btn soft" id="sheet">Відкрити таблицю</button>' : '') +
-      '<button class="btn soft" id="reload">Оновити дані</button><button class="btn ghost" id="off">Відʼєднати застосунок</button>';
+      '<button class="btn soft" id="reload">Оновити дані</button>' +
+      (isIos && !standalone ? '<button class="btn soft" id="cpl">📋 Скопіювати посилання для іконки</button>' +
+        '<p class="sub">Якщо іконка на початковому екрані просить підключення — скопіюй тут і встав у неї. Нікому не пересилай: у посиланні ключ.</p>' : '') +
+      '<button class="btn ghost" id="off">Відʼєднати застосунок</button>';
   }
   function bindFooter() {
     $('#quiz').onclick = openQuiz;
     if ($('#sheet')) $('#sheet').onclick = () => window.open(st.sheetUrl, '_blank');
+    if ($('#cpl')) $('#cpl').onclick = () => {
+      const l = location.origin + location.pathname + '?api=' + encodeURIComponent(conn.api) + '&key=' + conn.key;
+      (navigator.clipboard ? navigator.clipboard.writeText(l) : Promise.reject()).then(() => toast('Скопійовано ✓'), () => prompt('Скопіюй посилання:', l));
+    };
     $('#reload').onclick = () => { settings = null; refresh().then(() => { toast('Оновлено'); render(); }); };
     $('#off').onclick = () => { if (!confirm('Відʼєднати застосунок від таблиці? Дані в таблиці залишаться.')) return;
       Object.keys(LS).forEach(k => localStorage.removeItem(LS[k])); conn = null; st = null; outbox = []; settings = null;
