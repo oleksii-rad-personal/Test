@@ -4502,11 +4502,16 @@ function appSaveApi(url, reset) {
 function appTestApi() {
   const api = PropertiesService.getDocumentProperties().getProperty(APP.propApi) || '';
   if (!api) return { ok: false, msg: 'Спершу встав адресу веб-застосунку і натисни «Зберегти адресу».' };
-  let code = 0, body = '';
+  let code = 0, body = '', getText = '';
   try {
-    const r = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain;charset=utf-8',
-      payload: JSON.stringify({ key: appKey_(false), action: 'ping' }), muteHttpExceptions: true, followRedirects: true });
-    code = r.getResponseCode(); body = r.getContentText() || '';
+    // Як браузер: POST → 302 → GET за адресою з Location (так відповідає Apps Script).
+    let r = UrlFetchApp.fetch(api, { method: 'post', contentType: 'text/plain;charset=utf-8',
+      payload: JSON.stringify({ key: appKey_(false), action: 'ping' }), muteHttpExceptions: true, followRedirects: false });
+    code = r.getResponseCode();
+    const h = r.getHeaders() || {}, loc = h.Location || h.location;
+    if (code >= 300 && code < 400 && loc) { r = UrlFetchApp.fetch(loc, { muteHttpExceptions: true, followRedirects: true }); code = r.getResponseCode(); }
+    body = r.getContentText() || '';
+    try { getText = UrlFetchApp.fetch(api, { muteHttpExceptions: true, followRedirects: true }).getContentText() || ''; } catch (e) { getText = ''; }
   } catch (e) {
     return { ok: false, msg: 'Не вдалося звернутися до адреси: ' + e.message };
   }
@@ -4521,8 +4526,12 @@ function appTestApi() {
       ' Якщо варіанта «Усі» немає — таблиця в робочому акаунті, де це заборонив адміністратор: зроби копію таблиці в особистому Gmail.' };
   }
   if (/doPost/.test(body)) return { ok: false, msg: 'У розгортанні немає потрібного коду. ' + redeploy };
-  if (code === 404) return { ok: false, msg: 'Адресу не знайдено (404): розгортання видалене або адреса скопійована не повністю.' };
-  return { ok: false, msg: 'Неочікувана відповідь (код ' + code + '): ' + body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) };
+  const getOk = /API працює/.test(getText);
+  const snippet = t => t.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (code === 404) return { ok: false, msg: (getOk ? 'Сторінка API відкривається, але запит застосунку отримує 404. ' : 'Адресу не знайдено (404). ') +
+    'Найчастіше так буває, коли «Хто має доступ» — не «Усі», або таблиця в робочому акаунті з обмеженнями. ' + redeploy.replace('Версія: «Нова версія»', '«Хто має доступ»: «Усі»') +
+    ' Відповідь Google: ' + snippet(body) };
+  return { ok: false, msg: 'Неочікувана відповідь (код ' + code + '): ' + snippet(body) };
 }
 
 /** Меню: підключити застосунок на телефоні. */
