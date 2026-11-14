@@ -294,6 +294,10 @@ function onOpen() {
     .addItem('Перевірити таблицю', 'selfCheck')
     .addItem('🧩 Відновити категорії з операцій', 'repairCategories')
     .addSeparator()
+    .addSubMenu(ui.createMenu('🐱 Monobank')
+      .addItem('Підключити / налаштувати…', 'showMonoConnect')
+      .addItem('Синхронізувати зараз', 'monoSyncNow')
+      .addItem('Відключити', 'monoDisconnect'))
     .addItem('🏦 Імпорт виписки з банку…', 'showStatementImport')
     .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
     .addItem('📱 Підключити застосунок на телефон', 'showConnectApp')
@@ -813,6 +817,7 @@ function buildStart_(sh) {
   const formUrl = PropertiesService.getDocumentProperties().getProperty(FORM.propUrl);
   if (formUrl) writeFormLink_(sh, formUrl);
 
+  try { const mc = monoCfg_(); if (mc) monoWriteStatus_(sh.getParent(), monoStatusText_(mc)); } catch (e) { /* без Monobank */ }
   writeBlockTitle_(sh, START.checkRow - 1, 'ПЕРЕВІРКА ТАБЛИЦІ', 2);
   sh.getRange(START.checkRow, 3).setValue('Меню «Трекер» → «Перевірити таблицю».').setFontColor(THEME.muted);
   writeStartProfile_(sh);
@@ -896,6 +901,7 @@ function handleOpsEdit_(e) {
     sh.getRange(top, OPS.date, n, 2).setValues(vals.map(v => [v[OPS.date - 1], v[OPS.type - 1]]));
   }
   if (typeSet) applyCategoryValidation_(sh, top, n, touches(OPS.type));
+  if (touches(OPS.category) || touches(OPS.type)) { try { learnFromOpsEdit_(sh, top, n); } catch (err) { /* не заважаємо правці */ } }
 }
 
 function accountRule_(ss) {
@@ -1842,6 +1848,13 @@ function selfCheck() {
     }));
   });
   ok(!dollars.length, dollars.length ? 'Знайдено знак долара: ' + dollars.slice(0, 10).join(', ') : 'Ніде немає знака долара — лише «грн»');
+
+  // Monobank (лише якщо підключено; токен не показуємо).
+  try {
+    const mc = monoCfg_();
+    if (mc && monoProps_().getProperty(MONO.propToken)) ok(!mc.lastError, 'Monobank: ' + (mc.lastError || 'останнє оновлення ' + (mc.lastRun || '—')) +
+      (ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'monoSync') ? '' : ' · ⚠ автооновлення вимкнене — відкрий «🐱 Monobank → Підключити» і збережи ще раз'));
+  } catch (e) { /* без Monobank */ }
 
   // Запис результату.
   const stamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'dd.MM.yyyy HH:mm');
@@ -2998,6 +3011,7 @@ function cleanTrackerCopy_(c) {
     start.getRange(3, 2).setValue('Вписуєш суму — таблиця сама рахує, скільки можна витратити до наступної виплати.');
     start.getRange(START.formRow, 3).setValue('Ще не створена: меню «Трекер» → «Створити / оновити форму для телефону».');
     start.getRange(START.formRow + 1, 3).setValue('');
+    start.getRange(MONO.statusRow(), 3).setValue('');
     start.getRange(START.checkRow, 3, START.checkLines, 1).clearContent();
     start.getRange(START.checkRow, 3).setValue('Меню «Трекер» → «Перевірити таблицю».');
     start.getRange(START.profileRow, 3).setValue('Ще не заповнений — меню «Трекер» → «👋 Мій профіль (квіз)».');
@@ -3934,19 +3948,9 @@ function statementImport(items, account) {
   const chosen = (items || []).filter(x => x && x.date && Number(x.amount) > 0 && x.type && x.category);
   if (!chosen.length) return { added: 0, created: [] };
 
-  // Категорії, яких ще немає, — додаємо в «Налаштування».
-  const created = [];
   const lists = {};
   Object.keys(TYPE_LIST).forEach(t => { lists[t] = listValues_(ss, TYPE_LIST[t]); });
-  chosen.forEach(x => {
-    if (lists[x.type] && lists[x.type].indexOf(x.category) !== -1) return;
-    const key = x.type === TYPES.income ? 'Inc' : x.type === TYPES.debt ? 'Debt' : x.type === TYPES.saving ? 'Sav' : 'Var';
-    const canon = Object.keys(STMT.cats).map(k => STMT.cats[k]).filter(c => c[0] === x.category)[0];
-    const row = key === 'Var' ? { Name: x.category, Group: canon && canon[2] ? REF.groups[0] : REF.groups[1] }
-      : key === 'Debt' ? { Name: x.category, Freq: REF.freq[0][0] } : { Name: x.category };
-    if (appendBlockRow_(ss, key, row)) { created.push(x.category); lists[x.type].push(x.category); }
-    else x.category = key === 'Var' ? 'Інше' : x.category;
-  });
+  const created = ensureStmtCategories_(ss, chosen, lists);
   SpreadsheetApp.flush();
 
   // Вивчені правила: опис → тип і категорія (лише для змінених вручну).
@@ -3965,6 +3969,21 @@ function statementImport(items, account) {
   SpreadsheetApp.flush();
   syncCategoriesFromOps_(ss);
   return { added: rows.length, created: created };
+}
+
+/** Категорії, яких ще немає, — додаємо в «Налаштування». Повертає список створених. */
+function ensureStmtCategories_(ss, chosen, lists) {
+  const created = [];
+  chosen.forEach(x => {
+    if (lists[x.type] && lists[x.type].indexOf(x.category) !== -1) return;
+    const key = x.type === TYPES.income ? 'Inc' : x.type === TYPES.debt ? 'Debt' : x.type === TYPES.saving ? 'Sav' : 'Var';
+    const canon = Object.keys(STMT.cats).map(k => STMT.cats[k]).filter(c => c[0] === x.category)[0];
+    const row = key === 'Var' ? { Name: x.category, Group: canon && canon[2] ? REF.groups[0] : REF.groups[1] }
+      : key === 'Debt' ? { Name: x.category, Freq: REF.freq[0][0] } : { Name: x.category };
+    if (appendBlockRow_(ss, key, row)) { created.push(x.category); lists[x.type].push(x.category); }
+    else x.category = key === 'Var' ? 'Інше' : x.category;
+  });
+  return created;
 }
 
 function findStatementHeader_(rows) {
@@ -4612,6 +4631,409 @@ __QRLIB__
   }
   function copy() { const t = document.createElement('textarea'); t.value = D.link; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
   show(D.link);
+</script></body></html>`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MONOBANK: автоматичне підтягування операцій через персональний токен.
+// Токен і налаштування — у UserProperties: бачить лише власник, у копії таблиці не потрапляють.
+// Категорії — тим самим класифікатором, що й імпорт виписки (MCC, ключові слова, вивчені правила).
+// ─────────────────────────────────────────────────────────────────────────────
+const MONO = {
+  api: 'https://api.monobank.ua',
+  propToken: 'BT_MONO_TOKEN', propCfg: 'BT_MONO_CFG',
+  tag: 'моно',
+  windowSec: 31 * 86400,          // API віддає не більше 31 доби за запит
+  overlapSec: 2 * 86400,          // щоразу перечитуємо 2 доби: запізнілі й «утримані» операції
+  pageMax: 500,                   // більше записів за раз API не віддає — тоді догортаємо
+  pauseMs: 61000,                 // 1 запит виписки на хвилину
+  budgetMs: 270000,               // не довше ~4,5 хв за запуск (ліміт Apps Script — 6 хв)
+  statusRow: () => START.formRow + 2,
+  cardTypes: { black: 'Чорна', white: 'Біла', platinum: 'Platinum', iron: 'Iron', fop: 'ФОП', yellow: 'Дитяча',
+    eAid: 'єПідтримка', madeInUkraine: 'Made in Ukraine', rebuilding: 'Відновлення' },
+  jarIn: /на банку|поповнення банки|у банку|в банку/i,
+  jarOut: /з банки|зняття з банки|із банки/i,
+};
+
+function monoProps_() { return PropertiesService.getUserProperties(); }
+function monoCfg_() {
+  try { return JSON.parse(monoProps_().getProperty(MONO.propCfg) || 'null'); } catch (e) { return null; }
+}
+function monoSaveCfg_(cfg) { monoProps_().setProperty(MONO.propCfg, JSON.stringify(cfg)); }
+
+function monoFetch_(path, token) {
+  const r = UrlFetchApp.fetch(MONO.api + path, { headers: { 'X-Token': token }, muteHttpExceptions: true });
+  const code = r.getResponseCode(), text = r.getContentText() || '';
+  let j = null;
+  try { j = JSON.parse(text); } catch (e) { j = null; }
+  if (code === 429) { const e = new Error('Monobank просить зачекати хвилину (ліміт запитів).'); e.rate = true; throw e; }
+  if (code === 401 || code === 403) { const e = new Error('Monobank не прийняв токен. Створи новий на api.monobank.ua.'); e.auth = true; throw e; }
+  if (code !== 200) throw new Error('Monobank відповів ' + code + ': ' + String((j && j.errorDescription) || text).slice(0, 150));
+  return j;
+}
+
+/** Меню: діалог підключення. */
+function showMonoConnect() {
+  ensureOwnDocument_();
+  applyProfileTheme_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEETS.ops)) {
+    ss.toast('Спочатку побудуй трекер: меню «Трекер» → «Побудувати трекер з нуля».', menuTitle_(), 8);
+    return;
+  }
+  const cfg = monoCfg_();
+  const t = todayParts_(ss);
+  const data = {
+    theme: THEME, accounts: listValues_(ss, 'L_Acc'), connected: !!monoProps_().getProperty(MONO.propToken),
+    gender: profile_().gender || '', chosen: cfg ? cfg.accounts : [], since: (cfg && cfg.since) || isoDate_(t.y, t.m, 1), status: monoStatusText_(cfg),
+  };
+  const html = HtmlService.createHtmlOutput(MONO_HTML.replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c')))
+    .setWidth(620).setHeight(640);
+  SpreadsheetApp.getUi().showModalDialog(html, '🐱 Monobank');
+}
+
+/** З діалогу: перевірити токен (порожній — узяти збережений) і показати картки. */
+function monoCheckToken(token) {
+  const props = monoProps_();
+  const tok = String(token || '').trim() || props.getProperty(MONO.propToken) || '';
+  if (!tok) throw new Error('Встав токен з api.monobank.ua.');
+  if (!/^[\w-]{20,}$/.test(tok)) throw new Error('Це не схоже на токен Monobank (довгий рядок з літер і цифр).');
+  const info = monoFetch_('/personal/client-info', tok);
+  props.setProperty(MONO.propToken, tok);
+  const cards = (info.accounts || []).map(a => ({
+    id: a.id, uah: a.currencyCode === 980,
+    label: (MONO.cardTypes[a.type] || a.type || 'Рахунок') + (a.maskedPan && a.maskedPan[0] ? ' ·' + String(a.maskedPan[0]).slice(-4) : '') +
+      (a.currencyCode === 980 ? '' : a.currencyCode === 840 ? ' (USD)' : a.currencyCode === 978 ? ' (EUR)' : ' (валюта)'),
+    balance: Math.round(((a.balance || 0) - (a.creditLimit || 0))) / 100,
+  }));
+  return { cards: cards, jars: (info.jars || []).map(j => j.title).filter(String) };
+}
+
+/** З діалогу: зберегти вибір, увімкнути щогодинний запуск і одразу синхронізувати. */
+function monoSave(sel) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!monoProps_().getProperty(MONO.propToken)) throw new Error('Спершу перевір токен.');
+  const accounts = (sel && sel.accounts || []).filter(a => a && a.id && a.name).map(a => ({ id: String(a.id), name: String(a.name).slice(0, 40), label: String(a.label || '') }));
+  if (!accounts.length) throw new Error('Вибери хоча б одну картку.');
+  if (!/^\d{4}-\d\d-\d\d$/.test(sel.since || '')) throw new Error('Вкажи дату початку.');
+  // Нові рахунки — у «Налаштування» → «Рахунки».
+  const accR = ss.getRangeByName(NR + 'Acc_Name');
+  const known = accR ? accR.getValues().map(v => String(v[0]).trim()).filter(String) : listValues_(ss, 'L_Acc');
+  accounts.forEach(a => { if (known.indexOf(a.name) === -1 && appendBlockRow_(ss, 'Acc', { Name: a.name })) known.push(a.name); });
+  SpreadsheetApp.flush();
+  const old = monoCfg_() || {};
+  const sameSince = old.since === sel.since;
+  monoSaveCfg_({ accounts: accounts, since: sel.since, cursor: sameSince ? (old.cursor || {}) : {}, jars: old.jars || [] });
+  monoEnsureTrigger_();
+  return monoSync_(true);
+}
+
+function monoEnsureTrigger_() {
+  const has = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'monoSync');
+  if (!has) ScriptApp.newTrigger('monoSync').timeBased().everyHours(1).create();
+}
+
+/** Меню: відключити Monobank (токен і щогодинний запуск видаляються, операції лишаються). */
+function monoDisconnect() {
+  const ui = SpreadsheetApp.getUi();
+  if (ui.alert('Відключити Monobank?', 'Токен буде видалено, автооновлення вимкнеться. Уже внесені операції залишаться.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'monoSync').forEach(t => ScriptApp.deleteTrigger(t));
+  monoProps_().deleteProperty(MONO.propToken);
+  monoProps_().deleteProperty(MONO.propCfg);
+  monoWriteStatus_(SpreadsheetApp.getActiveSpreadsheet(), 'Monobank не підключено: меню «Трекер» → «🐱 Monobank».');
+  SpreadsheetApp.getActiveSpreadsheet().toast('Monobank відключено.', menuTitle_(), 5);
+}
+
+/** Меню: синхронізувати зараз. */
+function monoSyncNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!monoProps_().getProperty(MONO.propToken)) { showMonoConnect(); return; }
+  ss.toast('Забираю операції з Monobank… (до 2 хв)', menuTitle_(), 10);
+  const r = monoSync_(true);
+  ss.toast(r.message, menuTitle_(), 10);
+}
+
+/** Щогодинний тригер. */
+function monoSync() {
+  try { monoSync_(false); } catch (e) { Logger.log('monoSync: ' + e.message); }
+}
+
+/** Синхронізація. Повертає { added, confirmed, skipped, message }. */
+function monoSync_(interactive) {
+  const props = monoProps_();
+  const token = props.getProperty(MONO.propToken);
+  const cfg = monoCfg_();
+  if (!token || !cfg || !cfg.accounts || !cfg.accounts.length) return { added: 0, message: 'Monobank не підключено.' };
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEETS.ops)) return { added: 0, message: 'Трекер ще не побудовано.' };
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { added: 0, message: 'Синхронізація вже йде — спробуй за хвилину.' };
+  try {
+    const tz = ss.getSpreadsheetTimeZone();
+    const started = Date.now();
+    const now = Math.floor(Date.now() / 1000);
+    const p = cfg.since.split('-').map(Number);
+    const sinceSec = Math.floor(Utilities.parseDate(cfg.since, tz, 'yyyy-MM-dd').getTime() / 1000) || Math.floor(Date.UTC(p[0], p[1] - 1, p[2]) / 1000);
+    cfg.cursor = cfg.cursor || {};
+    const raw = [];
+    let calls = 0, stopped = '', error = '';
+    const call = path => {
+      if (calls) Utilities.sleep(MONO.pauseMs);
+      calls++;
+      return monoFetch_(path, token);
+    };
+
+    // 1. Виписки: вікнами по 31 добі від курсора, з догортанням сторінок по 500.
+    outer:
+    for (const acc of cfg.accounts) {
+      let from = Math.max(sinceSec, (cfg.cursor[acc.id] || 0) - MONO.overlapSec);
+      while (from < now) {
+        const winTo = Math.min(from + MONO.windowSec, now);
+        let to = winTo;
+        for (;;) {
+          if (Date.now() - started + (calls ? MONO.pauseMs : 0) > MONO.budgetMs) { stopped = 'time'; break outer; }
+          let batch;
+          try { batch = call('/personal/statement/' + acc.id + '/' + from + '/' + to); }
+          catch (e) {
+            if (e.rate && interactive && calls < 3) { calls = Math.max(calls, 1); continue; } // пауза — і ще раз
+            if (e.rate) { stopped = 'rate'; break outer; }
+            error = e.message; break outer;
+          }
+          (batch || []).forEach(x => raw.push({ x: x, acc: acc }));
+          if (!batch || batch.length < MONO.pageMax) break;
+          const oldest = Math.min.apply(null, batch.map(x => x.time));
+          if (!(oldest > from)) break;
+          to = oldest - 1;
+        }
+        cfg.cursor[acc.id] = winTo;
+        from = winTo;
+      }
+    }
+
+    // 2. Баланс і банки (не критично).
+    try {
+      if (!stopped && !error) {
+        const info = call('/personal/client-info');
+        const ids = cfg.accounts.map(a => a.id);
+        cfg.balance = (info.accounts || []).filter(a => ids.indexOf(a.id) !== -1)
+          .reduce((s, a) => s + ((a.balance || 0) - (a.creditLimit || 0)) / 100, 0);
+        cfg.jars = (info.jars || []).map(j => j.title).filter(String);
+        cfg.ibans = (info.accounts || []).map(a => String(a.iban || '').slice(-10)).filter(String);
+      }
+    } catch (e) { /* баланс оновиться наступного разу */ }
+
+    // 3. Класифікація і запис.
+    const res = monoWrite_(ss, raw, cfg);
+    cfg.lastRun = Utilities.formatDate(new Date(), tz, 'dd.MM HH:mm');
+    cfg.lastAdded = res.added;
+    cfg.lastError = error || (stopped === 'rate' ? 'ліміт запитів — решта підтягнеться за годину' : '');
+    monoSaveCfg_(cfg);
+    monoWriteStatus_(ss, monoStatusText_(cfg));
+
+    let msg = 'Monobank: додано ' + res.added + (res.confirmed ? ', підтверджено ручних записів: ' + res.confirmed : '') +
+      (res.skipped ? ', пропущено ' + res.skipped + ' (перекази між своїми, скасовані)' : '') + '.';
+    if (stopped) msg += ' Решту підтягну протягом години.';
+    if (error) msg = 'Monobank: ' + error;
+    return { added: res.added, confirmed: res.confirmed, skipped: res.skipped, message: msg, error: error };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Операції Monobank → рядки «Операцій» (без дублікатів). */
+function monoWrite_(ss, raw, cfg) {
+  const tz = ss.getSpreadsheetTimeZone();
+  const sh = ss.getSheetByName(SHEETS.ops);
+  const lists = {};
+  Object.keys(TYPE_LIST).forEach(t => { lists[t] = listValues_(ss, TYPE_LIST[t]); });
+  const subsR = ss.getRangeByName(NR + 'Subs_Name');
+  lists.subs = subsR ? subsR.getValues().map(v => v[0]).filter(String) : [];
+  const rules = statementRules_();
+  const jars = (cfg.jars || []).map(t => String(t).toLowerCase()).filter(String);
+  const ibans = cfg.ibans || [];
+
+  // Наявні рядки: id Monobank, ключі CSV-виписки, ручні записи для звірки.
+  const all = sh.getRange(2, 1, DATA_ROWS - 1, OPS_HEADERS.length).getValues();
+  const seen = {}, manual = [];
+  all.forEach((r, i) => {
+    const src = String(r[OPS.source - 1] || '');
+    const m = src.match(new RegExp(MONO.tag + ' (\\S+)'));
+    if (m) seen[m[1]] = true;
+    if (r[OPS.amount - 1] === '' || m || src === STMT.tag || src === DEMO_TAG) return;
+    if (!(r[OPS.date - 1] instanceof Date)) return;
+    manual.push({ row: i + 2, day: Math.floor(r[OPS.date - 1].getTime() / 86400000), type: r[OPS.type - 1], amount: Number(r[OPS.amount - 1]) || 0, src: src });
+  });
+  const csvKeys = existingStatementKeys_(ss);
+
+  const uniq = {};
+  const items = [];
+  raw.forEach(o => {
+    const x = o.x;
+    if (!x || !x.id || uniq[x.id] || seen[x.id] || !x.amount) return;
+    uniq[x.id] = true;
+    const desc = String(x.description || '').replace(/\s+/g, ' ').trim();
+    const it = { id: x.id, date: Utilities.formatDate(new Date(x.time * 1000), tz, 'yyyy-MM-dd'), desc: desc, mcc: x.mcc || '',
+      amount: Math.abs(x.amount) / 100, sign: x.amount < 0 ? -1 : 1, include: true, reason: '', account: o.acc.name };
+    const low = desc.toLowerCase();
+    const jar = jars.filter(t => low.indexOf(t) !== -1)[0];
+    if (it.sign < 0 && (jar || MONO.jarIn.test(desc))) {
+      it.type = TYPES.saving;
+      it.category = jar ? (cfg.jars || []).filter(t => String(t).toLowerCase() === jar)[0] : 'Банка';
+    } else if (it.sign > 0 && (jar || MONO.jarOut.test(desc))) {
+      it.include = false; it.reason = 'з банки';
+    } else if (x.counterIban && ibans.indexOf(String(x.counterIban).slice(-10)) !== -1) {
+      it.include = false; it.reason = 'переказ між своїми';
+    } else {
+      classifyStmtItem_(it, rules, lists);
+    }
+    it.key = it.date + '|' + it.sign * it.amount + '|' + desc;
+    if (csvKeys[it.key]) { it.include = false; it.reason = 'вже імпортовано з виписки'; }
+    items.push(it);
+  });
+  pairCancellations_(items);
+
+  const chosen = items.filter(x => x.include && x.type && x.category);
+  const skipped = items.length - chosen.length;
+
+  // Ручний запис з тією ж сумою й типом (±1 день) — не дублюємо, а позначаємо «підтверджено банком».
+  let confirmed = 0;
+  const toWrite = [];
+  chosen.forEach(x => {
+    const day = Math.floor(Date.UTC.apply(null, x.date.split('-').map((v, i) => i === 1 ? Number(v) - 1 : Number(v))) / 86400000);
+    const hit = manual.filter(m => !m.used && m.type === x.type && Math.abs(m.amount - x.amount) < 0.005 && Math.abs(m.day - day) <= 1)[0];
+    if (hit) {
+      hit.used = true; confirmed++;
+      sh.getRange(hit.row, OPS.source).setValue((hit.src ? hit.src + ' · ' : '') + MONO.tag + ' ' + x.id);
+    } else toWrite.push(x);
+  });
+
+  ensureStmtCategories_(ss, toWrite, lists);
+  const rows = toWrite.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map(x => [x.date, x.type, Math.round(x.amount * 100) / 100, x.category, x.account || '', x.desc + (x.mcc ? ' · MCC ' + x.mcc : ''), MONO.tag + ' ' + x.id]);
+  if (rows.length) {
+    const first = firstFreeOpsRow_(sh);
+    if (first + rows.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 50);
+    writeOpsRows_(sh, first, rows);
+  }
+  if (rows.length || confirmed) { SpreadsheetApp.flush(); syncCategoriesFromOps_(ss); }
+  return { added: rows.length, confirmed: confirmed, skipped: skipped };
+}
+
+function monoStatusText_(cfg) {
+  if (!cfg || !monoProps_().getProperty(MONO.propToken)) return 'Monobank не підключено: меню «Трекер» → «🐱 Monobank».';
+  const money = n => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' грн';
+  return '🐱 Monobank: ' + (cfg.lastRun ? 'оновлено ' + cfg.lastRun + ', нових операцій: ' + (cfg.lastAdded || 0) : 'ще не синхронізовано') +
+    (typeof cfg.balance === 'number' ? ' · на картках ' + money(cfg.balance) : '') + ' · автооновлення щогодини' +
+    (cfg.lastError ? ' · ⚠ ' + cfg.lastError : '');
+}
+
+function monoWriteStatus_(ss, text) {
+  const start = ss.getSheetByName(SHEETS.start);
+  if (!start) return;
+  start.getRange(MONO.statusRow(), 3).setValue(text).setFontColor(THEME.muted).setWrap(true);
+}
+
+/** Правка категорії/типу банківської операції → правило для наступних імпортів. */
+function learnFromOpsEdit_(sh, top, n) {
+  const vals = sh.getRange(top, 1, n, OPS_HEADERS.length).getValues();
+  const rules = statementRules_();
+  let changed = false;
+  vals.forEach(v => {
+    const src = String(v[OPS.source - 1] || '');
+    if (src.indexOf(MONO.tag + ' ') === -1 && src !== STMT.tag) return;
+    const type = v[OPS.type - 1], cat = v[OPS.category - 1];
+    const key = normDesc_(String(v[OPS.comment - 1] || '').replace(/ · MCC \d+$/, ''));
+    if (!key || !type || !cat) return;
+    const old = rules[key];
+    if (!old || old[0] !== type || old[1] !== cat) { rules[key] = [type, cat]; changed = true; }
+  });
+  if (changed) PropertiesService.getDocumentProperties().setProperty(STMT.propRules, JSON.stringify(rules).slice(0, 8500));
+}
+
+const MONO_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
+<style>
+  :root { --p:#4F86B5; --bg:#E5F1FA; --t:#2C5677; --muted:#8A9BAA; }
+  body { font-family:Arial, sans-serif; color:#2E3A46; margin:0; padding:14px 20px; font-size:14px; line-height:1.5; }
+  h2 { color:var(--t); font-size:16px; margin:14px 0 6px; }
+  ol { margin:0 0 8px; padding-left:20px; } li { margin-bottom:3px; }
+  input, select { box-sizing:border-box; padding:9px 11px; border:2px solid #E7EBF0; border-radius:10px; font-size:13px; font-family:inherit; }
+  input[type=password] { width:100%; }
+  .btn { border:none; border-radius:10px; padding:10px 16px; font-weight:bold; font-size:14px; cursor:pointer; background:var(--p); color:#fff; margin-top:8px; }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .box { background:var(--bg); border-radius:14px; padding:10px 14px; margin-top:10px; }
+  .card { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid #fff; }
+  .card label { flex:1; } .card .bal { color:var(--muted); font-size:12px; }
+  .card.off { opacity:.45; }
+  .err { color:#C0392B; font-weight:bold; min-height:18px; } .ok { color:#2E7D32; font-weight:bold; }
+  .muted { color:var(--muted); font-size:12px; }
+  a { color:var(--p); }
+</style></head><body>
+<div class="muted" id="status"></div>
+<h2>1. Токен</h2>
+<ol>
+  <li>Відкрий <a href="https://api.monobank.ua/" target="_blank">api.monobank.ua</a> і відскануй QR-код у застосунку Monobank.</li>
+  <li>Скопіюй токен і встав сюди.</li>
+</ol>
+<input type="password" id="tok" placeholder="Токен Monobank" autocomplete="off">
+<div class="muted" id="tokHint">Токен зберігається лише у твоєму акаунті Google — не в таблиці й не в її копіях. Він дає лише перегляд виписки, не платежі.</div>
+<button class="btn" id="check" onclick="check()">Перевірити</button>
+<div class="err" id="err"></div>
+<div id="step2" style="display:none">
+  <h2>2. Які картки підтягувати</h2>
+  <div class="box" id="cards"></div>
+  <div class="muted" id="jars"></div>
+  <h2>3. З якої дати</h2>
+  <input type="date" id="since"> <span class="muted">Раніші операції не імпортуються. Твої ручні записи з тією ж сумою не задублюються.</span>
+  <div><button class="btn" id="save" onclick="save()">Зберегти і синхронізувати</button></div>
+  <div class="muted">Далі таблиця сама забирає нові операції щогодини. <span id="chg">Змінила</span> категорію в «Операціях» — наступного разу трекер зробить так само.</div>
+  <div id="result"></div>
+</div>
+<script>
+  const D = __DATA__;
+  (function () { const r = document.documentElement.style, t = D.theme; r.setProperty('--p', t.primary); r.setProperty('--bg', t.headerBg); r.setProperty('--t', t.headerTxt); })();
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  $('since').value = D.since;
+  if (D.gender === 'm') $('chg').textContent = 'Змінив';
+  $('status').textContent = D.status;
+  if (D.connected) { $('tok').placeholder = 'Токен уже збережено — можна лишити порожнім'; }
+  let cards = [];
+  function check() {
+    $('err').textContent = ''; $('check').disabled = true; $('check').textContent = 'Перевіряю…';
+    google.script.run.withSuccessHandler(r => {
+      $('check').disabled = false; $('check').textContent = 'Перевірити'; $('tok').value = '';
+      cards = r.cards; render(r);
+    }).withFailureHandler(e => { $('check').disabled = false; $('check').textContent = 'Перевірити'; $('err').textContent = (e && e.message) || String(e); })
+      .monoCheckToken($('tok').value);
+  }
+  function render(r) {
+    const chosen = {}; (D.chosen || []).forEach(a => { chosen[a.id] = a.name; });
+    const guess = D.accounts.filter(n => /карт|моно|mono/i.test(n))[0];
+    $('cards').innerHTML = r.cards.map((c, i) => {
+      const opts = D.accounts.map(n => '<option' + ((chosen[c.id] || guess) === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
+        '<option value="__new"' + (!(chosen[c.id] || guess) ? ' selected' : '') + '>➕ Новий рахунок «Моно ' + esc(c.label) + '»</option>';
+      const on = c.uah && (chosen[c.id] !== undefined || (!D.chosen.length && i === r.cards.findIndex(x => x.uah)));
+      return '<div class="card' + (c.uah ? '' : ' off') + '"><input type="checkbox" id="c' + i + '"' + (on ? ' checked' : '') + (c.uah ? '' : ' disabled') + '>' +
+        '<label for="c' + i + '">' + esc(c.label) + ' <span class="bal">' + Math.round(c.balance).toLocaleString('uk-UA') + (c.uah ? ' грн' : '') + '</span>' +
+        (c.uah ? '' : ' <span class="bal">— валютні рахунки пізніше</span>') + '</label>' +
+        (c.uah ? '<select id="s' + i + '">' + opts + '</select>' : '') + '</div>';
+    }).join('') || 'Карток не знайдено.';
+    $('jars').textContent = r.jars.length ? 'Банки: ' + r.jars.join(', ') + ' — поповнення запишуться як «Заощадження» з такою ж назвою.' : '';
+    $('step2').style.display = 'block';
+  }
+  function save() {
+    const accounts = [];
+    cards.forEach((c, i) => {
+      const cb = $('c' + i); if (!cb || !cb.checked) return;
+      const v = $('s' + i).value;
+      accounts.push({ id: c.id, label: c.label, name: v === '__new' ? 'Моно ' + c.label : v });
+    });
+    $('err').textContent = ''; $('save').disabled = true; $('save').textContent = 'Синхронізую… (до 2 хв)'; $('result').textContent = '';
+    google.script.run.withSuccessHandler(r => {
+      $('save').disabled = false; $('save').textContent = 'Зберегти і синхронізувати';
+      $('result').className = r.error ? 'err' : 'ok'; $('result').textContent = r.message;
+    }).withFailureHandler(e => { $('save').disabled = false; $('save').textContent = 'Зберегти і синхронізувати'; $('err').textContent = (e && e.message) || String(e); })
+      .monoSave({ accounts: accounts, since: $('since').value });
+  }
 </script></body></html>`;
 
 // ─────────────────────────────────────────────────────────────────────────────
