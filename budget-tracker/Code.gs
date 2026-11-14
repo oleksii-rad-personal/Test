@@ -293,10 +293,13 @@ function onOpen() {
     .addItem('Створити / оновити форму для телефону', 'createEntryForm')
     .addItem('Перевірити таблицю', 'selfCheck')
     .addItem('🧩 Відновити категорії з операцій', 'repairCategories')
+    .addItem('❓ Показати операції на перевірку', 'toggleUnsureFilter')
+    .addItem('🧩 Застосувати правила до операцій', 'applyRulesToOps')
     .addSeparator()
     .addSubMenu(ui.createMenu('🐱 Monobank')
       .addItem('Підключити / налаштувати…', 'showMonoConnect')
       .addItem('Синхронізувати зараз', 'monoSyncNow')
+      .addItem('✉️ Надіслати лист «на перевірку» зараз', 'monoDigestNow')
       .addItem('Відключити', 'monoDisconnect'))
     .addItem('🏦 Імпорт виписки з банку…', 'showStatementImport')
     .addItem('Імпорт з іншої таблиці…', 'importBudgetSheet')
@@ -901,7 +904,9 @@ function handleOpsEdit_(e) {
     sh.getRange(top, OPS.date, n, 2).setValues(vals.map(v => [v[OPS.date - 1], v[OPS.type - 1]]));
   }
   if (typeSet) applyCategoryValidation_(sh, top, n, touches(OPS.type));
-  if (touches(OPS.category) || touches(OPS.type)) { try { learnFromOpsEdit_(sh, top, n); } catch (err) { /* не заважаємо правці */ } }
+  if (touches(OPS.category) || touches(OPS.type) || touches(OPS.comment)) {
+    try { learnFromOpsEdit_(sh, top, n, touches(OPS.category) || touches(OPS.type)); } catch (err) { /* не заважаємо правці */ }
+  }
 }
 
 function accountRule_(ss) {
@@ -2993,6 +2998,8 @@ function cleanTrackerCopy_(c) {
     if (s.getFormUrl && s.getFormUrl()) { try { FormApp.openByUrl(s.getFormUrl()).removeDestination(); } catch (e) { /* ок */ } }
     if (s.getName().indexOf(FORM.responsesSheet) === 0) c.deleteSheet(s);
   });
+  const rulesSh = c.getSheetByName(RULES_SHEET);
+  if (rulesSh) c.deleteSheet(rulesSh);
   const ops = c.getSheetByName(SHEETS.ops);
   if (ops) {
     const blank = new Array(OPS_HEADERS.length).fill('');
@@ -3954,9 +3961,7 @@ function statementImport(items, account) {
   SpreadsheetApp.flush();
 
   // Вивчені правила: опис → тип і категорія (лише для змінених вручну).
-  const rules = statementRules_();
-  chosen.filter(x => x.learn && x.desc).forEach(x => { rules[normDesc_(x.desc)] = [x.type, x.category]; });
-  PropertiesService.getDocumentProperties().setProperty(STMT.propRules, JSON.stringify(rules).slice(0, 8500));
+  chosen.filter(x => x.learn && x.desc).forEach(x => addRule_(ss, x.desc, x.type, x.category, 'авто'));
 
   const existing = existingStatementKeys_(ss);
   const rows = chosen.filter(x => !existing[x.key]).map(x => [x.date, x.type, Math.round(Number(x.amount) * 100) / 100, x.category,
@@ -4030,8 +4035,146 @@ function normDesc_(d) {
   return String(d || '').toLowerCase().replace(STMT.cancel, '').replace(/[0-9]+/g, '').replace(/[^a-zа-яіїєґ]+/gi, ' ').trim().slice(0, 40);
 }
 
+// ── Правила категорій: вкладка «Правила» (не перебудовується разом із трекером).
+const RULES_SHEET = 'Правила';
+const RULES_TOP = 4;            // перший рядок правил
+const RULES_MAX = 400;
+const FLAG = '❓ ';             // позначка «перевір» на початку коментаря
+const UNSURE_MCC = [4829, 4830, 6010, 6011, 6012, 6538, 6540];
+
+/** Правила: [[шаблон (нормалізований), тип, категорія]]. Старі правила з властивостей — як запасний варіант. */
 function statementRules_() {
-  try { return JSON.parse(PropertiesService.getDocumentProperties().getProperty(STMT.propRules) || '{}'); } catch (e) { return {}; }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss && ss.getSheetByName(RULES_SHEET);
+  if (sh) {
+    return sh.getRange(RULES_TOP, 1, RULES_MAX, 3).getValues()
+      .filter(r => String(r[0]).trim() && r[1] && r[2]).map(r => [normDesc_(r[0]), r[1], r[2]]).filter(r => r[0]);
+  }
+  try {
+    const old = JSON.parse(PropertiesService.getDocumentProperties().getProperty(STMT.propRules) || '{}');
+    return Object.keys(old).map(k => [k, old[k][0], old[k][1]]);
+  } catch (e) { return []; }
+}
+
+/** Найточніше (найдовше) правило, чий текст міститься в описі. → [тип, категорія] або null. */
+function ruleFor_(rules, desc) {
+  const n = normDesc_(desc);
+  if (!n) return null;
+  let best = null;
+  (rules || []).forEach(r => { if (r[0] && n.indexOf(r[0]) !== -1 && (!best || r[0].length > best[0].length)) best = r; });
+  return best ? [best[1], best[2]] : null;
+}
+
+/** Опис банку з коментаря операції: без «❓», MCC і власної примітки після « — ». */
+function baseDesc_(comment) {
+  return String(comment || '').replace(/^❓\s*/, '').split(' · MCC')[0].split(' — ')[0].trim();
+}
+
+function ensureRulesSheet_(ss) {
+  let sh = ss.getSheetByName(RULES_SHEET);
+  if (sh) return sh;
+  sh = ss.insertSheet(RULES_SHEET);
+  styleSheet_(sh);
+  sh.getRange('A1').setValue(spaced_('ПРАВИЛА КАТЕГОРІЙ')).setFontSize(18).setFontWeight('bold').setFontColor(THEME.primary);
+  sh.getRange('A2:D2').merge().setValue('Якщо опис операції з банку містить текст з колонки «Опис містить» — трекер ставить цей тип і категорію. ' +
+    'Правила додаються самі, коли ти змінюєш категорію банківської операції в «Операціях». Можна дописати й вручну (напр. «FOP Іваненко» → Барбер). ' +
+    'Довше правило важливіше. Меню «Трекер» → «🧩 Застосувати правила до операцій» — переписати вже внесені.')
+    .setWrap(true).setFontColor(THEME.muted).setFontStyle('italic');
+  sh.setRowHeight(2, 54);
+  sh.getRange(3, 1, 1, 4).setValues([['Опис містить', 'Тип', 'Категорія', 'Звідки']])
+    .setBackground(THEME.primary).setFontColor('#FFFFFF').setFontWeight('bold');
+  [280, 130, 220, 110].forEach((w, i) => sh.setColumnWidth(i + 1, w));
+  sh.setFrozenRows(3);
+  sh.getRange(RULES_TOP, 1, RULES_MAX, 3).setBackground(THEME.input);
+  sh.getRange(RULES_TOP, 2, RULES_MAX, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInRange(listRange_(ss, 'L_Types'), true).setAllowInvalid(false).build());
+  sh.getRange(RULES_TOP, 3, RULES_MAX, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInRange(listRange_(ss, 'L_All'), true).setAllowInvalid(true).setHelpText('Категорія з «Налаштувань».').build());
+  sh.getRange(RULES_TOP, 4, RULES_MAX, 1).setFontColor(THEME.muted);
+  // Перенести правила, вивчені раніше (зберігались у властивостях документа).
+  try {
+    const old = JSON.parse(PropertiesService.getDocumentProperties().getProperty(STMT.propRules) || '{}');
+    const rows = Object.keys(old).filter(k => k && old[k] && old[k][1]).map(k => [k, old[k][0], old[k][1], 'авто']);
+    if (rows.length) sh.getRange(RULES_TOP, 1, rows.length, 4).setValues(rows.slice(0, RULES_MAX));
+  } catch (e) { /* немає старих */ }
+  return sh;
+}
+
+/** Додати або оновити правило. */
+function addRule_(ss, pattern, type, category, from) {
+  const pat = String(pattern || '').trim().slice(0, 60);
+  if (!normDesc_(pat) || !type || !category) return;
+  const sh = ensureRulesSheet_(ss);
+  const vals = sh.getRange(RULES_TOP, 1, RULES_MAX, 3).getValues();
+  const key = normDesc_(pat);
+  let i = vals.findIndex(r => String(r[0]).trim() && normDesc_(r[0]) === key);
+  if (i >= 0 && vals[i][1] === type && vals[i][2] === category) return;
+  if (i < 0) i = vals.findIndex(r => !String(r[0]).trim());
+  if (i < 0) return;
+  sh.getRange(RULES_TOP + i, 1, 1, 4).setValues([[i >= 0 && String(vals[i][0]).trim() ? vals[i][0] : pat, type, category, from || 'авто']]);
+}
+
+/** Меню: переписати тип і категорію вже внесених банківських операцій за правилами. */
+function applyRulesToOps() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEETS.ops);
+  if (!sh) return;
+  const rules = statementRules_();
+  const vals = sh.getRange(2, 1, DATA_ROWS - 1, OPS_HEADERS.length).getValues();
+  let n = 0;
+  vals.forEach((v, i) => {
+    const src = String(v[OPS.source - 1] || '');
+    if (v[OPS.amount - 1] === '' || (src.indexOf(MONO.tag + ' ') === -1 && src !== STMT.tag)) return;
+    const r = ruleFor_(rules, baseDesc_(v[OPS.comment - 1]));
+    if (!r) return;
+    const flagged = String(v[OPS.comment - 1]).indexOf(FLAG.trim()) === 0;
+    if (r[0] === v[OPS.type - 1] && r[1] === v[OPS.category - 1] && !flagged) return;
+    v[OPS.type - 1] = r[0]; v[OPS.category - 1] = r[1];
+    v[OPS.comment - 1] = String(v[OPS.comment - 1]).replace(/^❓\s*/, '');
+    writeOpsRows_(sh, i + 2, [v]);
+    n++;
+  });
+  SpreadsheetApp.flush();
+  try { ss.toast(n ? 'Оновлено операцій: ' + n : 'Усі банківські операції вже відповідають правилам.', menuTitle_(), 6); } catch (e) { /* без UI */ }
+  return n;
+}
+
+/** Меню: показати/сховати лише операції з «❓». */
+function toggleUnsureFilter() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(SHEETS.ops);
+  if (!sh) return;
+  let f = sh.getFilter();
+  if (!f) f = sh.getRange(1, 1, DATA_ROWS, OPS_HEADERS.length).createFilter();
+  ss.setActiveSheet(sh);
+  if (f.getColumnFilterCriteria(OPS.comment)) {
+    f.removeColumnFilterCriteria(OPS.comment);
+    ss.toast('Показую всі операції.', menuTitle_(), 4);
+  } else {
+    f.setColumnFilterCriteria(OPS.comment, SpreadsheetApp.newFilterCriteria().whenTextStartsWith(FLAG.trim()).build());
+    ss.toast('Лише операції «❓ перевір». Постав категорію (або допиши після « — » що це було) — позначка зникне. Повторно цей пункт меню — показати все.', menuTitle_(), 10);
+  }
+}
+
+/** Жовта підсвітка рядків «❓» в «Операціях» (додається один раз). */
+function ensureUnsureFormat_(sh) {
+  const rules = sh.getConditionalFormatRules();
+  const has = rules.some(r => { try { return (r.getBooleanCondition().getCriteriaValues()[0] || '').toString().indexOf('❓') !== -1; } catch (e) { return false; } });
+  if (has) return;
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(F_('=LEFT($' + colLetter_(OPS.comment) + '2,1)="❓"'))
+    .setBackground('#FFF1C2').setRanges([sh.getRange(2, 1, DATA_ROWS - 1, OPS_HEADERS.length)]).build());
+  sh.setConditionalFormatRules(rules);
+}
+
+/** Операції з «❓» (для листа й статусу). */
+function unsureOps_(ss) {
+  const sh = ss.getSheetByName(SHEETS.ops);
+  if (!sh) return [];
+  return sh.getRange(2, 1, DATA_ROWS - 1, OPS_HEADERS.length).getValues()
+    .filter(v => v[OPS.amount - 1] !== '' && String(v[OPS.comment - 1] || '').indexOf(FLAG.trim()) === 0)
+    .map(v => ({ date: v[OPS.date - 1], type: v[OPS.type - 1], amount: Number(v[OPS.amount - 1]) || 0,
+      category: v[OPS.category - 1], desc: baseDesc_(v[OPS.comment - 1]) }));
 }
 
 function existingStatementKeys_(ss) {
@@ -4055,14 +4198,14 @@ function stmtCategory_(code, existing) {
 
 function classifyStmtItem_(it, rules, lists) {
   const d = it.desc;
-  const learned = rules[normDesc_(d)];
+  const learned = ruleFor_(rules, d);
   if (STMT.ownTransfer.test(d)) { it.include = false; it.reason = 'переказ між своїми'; }
   if (it.sign > 0) {
     if (STMT.cancel.test(d)) { it.type = TYPES.expense; it.category = ''; it.cancel = true; it.include = false; it.reason = 'повернення / скасування'; return; }
     it.type = TYPES.income;
     if (STMT.cashback.test(d)) it.category = stmtCategory_('cashback', lists[TYPES.income]);
-    else it.category = (lists[TYPES.income].filter(n => /зарплат/i.test(n))[0] && /зарплат|salary|заробітн/i.test(d))
-      ? lists[TYPES.income].filter(n => /зарплат/i.test(n))[0] : stmtCategory_('incOther', lists[TYPES.income]);
+    else if (lists[TYPES.income].filter(n => /зарплат/i.test(n))[0] && /зарплат|salary|заробітн/i.test(d)) it.category = lists[TYPES.income].filter(n => /зарплат/i.test(n))[0];
+    else { it.category = stmtCategory_('incOther', lists[TYPES.income]); it.unsure = true; }
   } else {
     it.type = TYPES.expense;
     const sub = (lists.subs || []).filter(n => n && d.toLowerCase().indexOf(String(n).toLowerCase()) !== -1)[0];
@@ -4071,8 +4214,10 @@ function classifyStmtItem_(it, rules, lists) {
     STMT.keywords.some(k => { if (k[0].test(d)) { code = k[1]; return true; } return false; });
     if (!code && it.mcc) STMT.mcc.some(m => { if (m[0].indexOf(Number(it.mcc)) !== -1) { code = m[1]; return true; } return false; });
     it.category = stmtCategory_(code || 'other', lists[TYPES.expense]);
+    // Не впевнені: нічого не впізнали, або це переказ людині / готівка (MCC нічого не каже про покупку).
+    if (!code || UNSURE_MCC.indexOf(Number(it.mcc)) !== -1) it.unsure = true;
   }
-  if (learned && it.include) { it.type = learned[0]; it.category = learned[1]; it.learned = true; }
+  if (learned && it.include) { it.type = learned[0]; it.category = learned[1]; it.learned = true; it.unsure = false; }
 }
 
 /** «Скасування. Glovo +402,2» знімає пару «Glovo −402,2». */
@@ -4684,7 +4829,7 @@ function showMonoConnect() {
   const t = todayParts_(ss);
   const data = {
     theme: THEME, accounts: listValues_(ss, 'L_Acc'), connected: !!monoProps_().getProperty(MONO.propToken),
-    gender: profile_().gender || '', chosen: cfg ? cfg.accounts : [], since: (cfg && cfg.since) || isoDate_(t.y, t.m, 1), status: monoStatusText_(cfg),
+    gender: profile_().gender || '', digest: !cfg || cfg.digest !== false, chosen: cfg ? cfg.accounts : [], since: (cfg && cfg.since) || isoDate_(t.y, t.m, 1), status: monoStatusText_(cfg),
   };
   const html = HtmlService.createHtmlOutput(MONO_HTML.replace('__DATA__', () => JSON.stringify(data).replace(/</g, '\\u003c')))
     .setWidth(620).setHeight(640);
@@ -4722,9 +4867,44 @@ function monoSave(sel) {
   SpreadsheetApp.flush();
   const old = monoCfg_() || {};
   const sameSince = old.since === sel.since;
-  monoSaveCfg_({ accounts: accounts, since: sel.since, cursor: sameSince ? (old.cursor || {}) : {}, jars: old.jars || [] });
+  monoSaveCfg_({ accounts: accounts, since: sel.since, cursor: sameSince ? (old.cursor || {}) : {}, jars: old.jars || [],
+    digest: sel.digest !== false, digestDay: old.digestDay || '' });
   monoEnsureTrigger_();
   return monoSync_(true);
+}
+
+/** Лист собі: операції з «❓». force — навіть якщо порожньо (з меню). */
+function monoDigest_(ss, force) {
+  const list = unsureOps_(ss);
+  if (!list.length && !force) return 0;
+  const tz = ss.getSpreadsheetTimeZone();
+  const today = todayIso_(ss);
+  const d = v => (v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(v));
+  const money = n => (Math.round(n * 100) / 100).toString().replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' грн';
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const row = x => '<tr><td style="padding:4px 10px 4px 0;color:#8A9BAA">' + d(x.date).slice(8, 10) + '.' + d(x.date).slice(5, 7) +
+    '</td><td style="padding:4px 10px 4px 0"><b>' + esc(x.desc) + '</b></td><td style="padding:4px 10px 4px 0;white-space:nowrap">' +
+    (x.type === TYPES.income ? '+' : '−') + money(x.amount) + '</td><td style="color:#8A9BAA">' + esc(x.category) + '</td></tr>';
+  const fresh = list.filter(x => d(x.date) === today), older = list.filter(x => d(x.date) !== today);
+  const html = '<div style="font:14px Arial;color:#2E3A46;line-height:1.5">' +
+    (list.length ? '<p>Згадай, на що були ці витрати, поки памʼятаєш — і постав категорію в «Операціях» (або допиши після « — » що це було).</p>' +
+      (fresh.length ? '<p><b>Сьогодні</b></p><table>' + fresh.map(row).join('') + '</table>' : '') +
+      (older.length ? '<p><b>Раніше, ще не перевірені</b></p><table>' + older.map(row).join('') + '</table>' : '')
+      : '<p>Немає операцій на перевірку 🎉</p>') +
+    '<p><a href="' + ss.getUrl() + '">Відкрити трекер</a> → меню «Трекер» → «❓ Показати операції на перевірку».</p>' +
+    '<p style="color:#8A9BAA;font-size:12px">Виправлена категорія запамʼятовується: наступного разу такий самий отримувач потрапить у неї сам. ' +
+    'Вимкнути листи: «Трекер» → «🐱 Monobank» → «Підключити / налаштувати…».</p></div>';
+  MailApp.sendEmail({ to: Session.getEffectiveUser().getEmail(),
+    subject: list.length ? '❓ Трекер: перевір ' + list.length + ' операц.' + (fresh.length ? ' (сьогодні ' + fresh.length + ')' : '') : 'Трекер: усе перевірено',
+    htmlBody: html, name: 'Трекер бюджету' });
+  return list.length;
+}
+
+/** Меню: надіслати лист зараз. */
+function monoDigestNow() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const n = monoDigest_(ss, true);
+  ss.toast(n ? 'Лист надіслано: ' + n + ' операцій на перевірку.' : 'Лист надіслано: перевіряти нічого.', menuTitle_(), 6);
 }
 
 function monoEnsureTrigger_() {
@@ -4825,12 +5005,21 @@ function monoSync_(interactive) {
     const res = monoWrite_(ss, raw, cfg);
     cfg.lastRun = Utilities.formatDate(new Date(), tz, 'dd.MM HH:mm');
     cfg.lastAdded = res.added;
+    cfg.unsure = unsureOps_(ss).length;
+    // Вечірній лист: після 20:00, раз на день, лише якщо є що перевірити.
+    if (!interactive && cfg.digest !== false) {
+      const today = todayIso_(ss);
+      if (Number(Utilities.formatDate(new Date(), tz, 'H')) >= 20 && cfg.digestDay !== today) {
+        try { monoDigest_(ss, false); cfg.digestDay = today; } catch (e) { Logger.log('digest: ' + e.message); }
+      }
+    }
     cfg.lastError = error || (stopped === 'rate' ? 'ліміт запитів — решта підтягнеться за годину' : '');
     monoSaveCfg_(cfg);
     monoWriteStatus_(ss, monoStatusText_(cfg));
 
     let msg = 'Monobank: додано ' + res.added + (res.confirmed ? ', підтверджено ручних записів: ' + res.confirmed : '') +
-      (res.skipped ? ', пропущено ' + res.skipped + ' (перекази між своїми, скасовані)' : '') + '.';
+      (res.skipped ? ', пропущено ' + res.skipped + ' (перекази між своїми, скасовані)' : '') + '.' +
+      (cfg.unsure ? ' ❓ Перевір ' + cfg.unsure + ' (меню «Трекер» → «❓ Показати операції на перевірку»).' : '');
     if (stopped) msg += ' Решту підтягну протягом години.';
     if (error) msg = 'Monobank: ' + error;
     return { added: res.added, confirmed: res.confirmed, skipped: res.skipped, message: msg, error: error };
@@ -4908,14 +5097,16 @@ function monoWrite_(ss, raw, cfg) {
 
   ensureStmtCategories_(ss, toWrite, lists);
   const rows = toWrite.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    .map(x => [x.date, x.type, Math.round(x.amount * 100) / 100, x.category, x.account || '', x.desc + (x.mcc ? ' · MCC ' + x.mcc : ''), MONO.tag + ' ' + x.id]);
+    .map(x => [x.date, x.type, Math.round(x.amount * 100) / 100, x.category, x.account || '',
+      (x.unsure ? FLAG : '') + x.desc + (x.mcc ? ' · MCC ' + x.mcc : ''), MONO.tag + ' ' + x.id]);
+  if (rows.some(r => String(r[OPS.comment - 1]).indexOf(FLAG) === 0)) ensureUnsureFormat_(sh);
   if (rows.length) {
     const first = firstFreeOpsRow_(sh);
     if (first + rows.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 50);
     writeOpsRows_(sh, first, rows);
   }
   if (rows.length || confirmed) { SpreadsheetApp.flush(); syncCategoriesFromOps_(ss); }
-  return { added: rows.length, confirmed: confirmed, skipped: skipped };
+  return { added: rows.length, confirmed: confirmed, skipped: skipped, unsure: rows.filter(r => String(r[OPS.comment - 1]).indexOf(FLAG) === 0).length };
 }
 
 function monoStatusText_(cfg) {
@@ -4923,6 +5114,7 @@ function monoStatusText_(cfg) {
   const money = n => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' грн';
   return '🐱 Monobank: ' + (cfg.lastRun ? 'оновлено ' + cfg.lastRun + ', нових операцій: ' + (cfg.lastAdded || 0) : 'ще не синхронізовано') +
     (typeof cfg.balance === 'number' ? ' · на картках ' + money(cfg.balance) : '') + ' · автооновлення щогодини' +
+    (cfg.unsure ? ' · ❓ перевір: ' + cfg.unsure : '') +
     (cfg.lastError ? ' · ⚠ ' + cfg.lastError : '');
 }
 
@@ -4932,21 +5124,19 @@ function monoWriteStatus_(ss, text) {
   start.getRange(MONO.statusRow(), 3).setValue(text).setFontColor(THEME.muted).setWrap(true);
 }
 
-/** Правка категорії/типу банківської операції → правило для наступних імпортів. */
-function learnFromOpsEdit_(sh, top, n) {
+/** Правка категорії/типу банківської операції → правило в «Правилах» і зняття «❓». */
+function learnFromOpsEdit_(sh, top, n, catEdited) {
+  const ss = sh.getParent();
   const vals = sh.getRange(top, 1, n, OPS_HEADERS.length).getValues();
-  const rules = statementRules_();
-  let changed = false;
-  vals.forEach(v => {
+  vals.forEach((v, i) => {
     const src = String(v[OPS.source - 1] || '');
     if (src.indexOf(MONO.tag + ' ') === -1 && src !== STMT.tag) return;
     const type = v[OPS.type - 1], cat = v[OPS.category - 1];
-    const key = normDesc_(String(v[OPS.comment - 1] || '').replace(/ · MCC \d+$/, ''));
-    if (!key || !type || !cat) return;
-    const old = rules[key];
-    if (!old || old[0] !== type || old[1] !== cat) { rules[key] = [type, cat]; changed = true; }
+    if (!type || !cat) return;
+    if (catEdited) addRule_(ss, baseDesc_(v[OPS.comment - 1]), type, cat, 'авто');
+    const com = String(v[OPS.comment - 1] || '');
+    if (com.indexOf(FLAG.trim()) === 0) sh.getRange(top + i, OPS.comment).setValue(com.replace(/^❓\s*/, ''));
   });
-  if (changed) PropertiesService.getDocumentProperties().setProperty(STMT.propRules, JSON.stringify(rules).slice(0, 8500));
 }
 
 const MONO_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset="utf-8">
@@ -4983,6 +5173,9 @@ const MONO_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset=
   <div class="muted" id="jars"></div>
   <h2>3. З якої дати</h2>
   <input type="date" id="since"> <span class="muted">Раніші операції не імпортуються. Твої ручні записи з тією ж сумою не задублюються.</span>
+  <h2>4. Нагадування</h2>
+  <label><input type="checkbox" id="digest"> Щовечора (після 20:00) надсилати мені лист з операціями «❓ перевір» — поки памʼятаю, на що <span id="dgw">витратила</span></label>
+  <div class="muted">Сумнівні операції (перекази людям, «Інше», готівка) позначаються ❓ і підсвічуються жовтим. Лист іде лише на твій Gmail і лише коли є що перевірити.</div>
   <div><button class="btn" id="save" onclick="save()">Зберегти і синхронізувати</button></div>
   <div class="muted">Далі таблиця сама забирає нові операції щогодини. <span id="chg">Змінила</span> категорію в «Операціях» — наступного разу трекер зробить так само.</div>
   <div id="result"></div>
@@ -4994,6 +5187,8 @@ const MONO_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset=
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   $('since').value = D.since;
   if (D.gender === 'm') $('chg').textContent = 'Змінив';
+  if (D.gender === 'm') $('dgw').textContent = 'витратив';
+  $('digest').checked = D.digest !== false;
   $('status').textContent = D.status;
   if (D.connected) { $('tok').placeholder = 'Токен уже збережено — можна лишити порожнім'; }
   let cards = [];
@@ -5032,7 +5227,7 @@ const MONO_HTML = String.raw`<!DOCTYPE html><html lang="uk"><head><meta charset=
       $('save').disabled = false; $('save').textContent = 'Зберегти і синхронізувати';
       $('result').className = r.error ? 'err' : 'ok'; $('result').textContent = r.message;
     }).withFailureHandler(e => { $('save').disabled = false; $('save').textContent = 'Зберегти і синхронізувати'; $('err').textContent = (e && e.message) || String(e); })
-      .monoSave({ accounts: accounts, since: $('since').value });
+      .monoSave({ accounts: accounts, since: $('since').value, digest: $('digest').checked });
   }
 </script></body></html>`;
 
